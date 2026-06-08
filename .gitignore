@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# Poetry
+poetry.lock
+
+# IDE
+.vscode/
+.idea/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Claude Code (contains local permissions with potential API keys)
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

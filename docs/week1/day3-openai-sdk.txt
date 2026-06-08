@@ -1,0 +1,97 @@
+Week 1 Day 3 — OpenAI SDK 深度使用
+
+日期：2026-05-23
+学习时长：约 2.5 小时
+
+
+今天学了什么
+
+1. 理解了 SDK 和 API 的区别：API 是协议规范（"怎么说话"），SDK 是工具包（"帮你说话"）
+2. 用 OpenAI SDK 连接了 DeepSeek 大模型——换个 base_url 就能用不同厂商的模型
+3. 掌握了 Chat Completions 的完整调用方式：messages 三层结构、temperature、streaming
+4. 发现了 AI 没有记忆的真相——看起来有记忆只是因为每次把完整对话历史重新发送
+5. 关联了 temperature=0 和贪心算法的关系（永远选概率最高的字）
+
+
+核心概念
+
+| 概念 | 一句话解释 | 类比 |
+|------|-----------|------|
+| SDK | 帮你调用 API 的工具包，一行函数搞定 HTTP 请求 | 手机通讯录——按一个键就拨号，不用记号码 |
+| API Key | 你的会员卡号，证明身份+记账 | 银行卡卡号 |
+| OpenAI 兼容格式 | 国产模型也用 OpenAI 的请求格式，同一套代码换 URL 就能用 | 同一个插座（220V），插不同的电器都能用 |
+| base_url | SDK 往哪个网址发请求 | 拨号地址——打给北京还是打给上海 |
+| messages | 对话历史列表，每次请求都要重新发过去 | 每次见面重新递上所有聊天记录 |
+| system prompt | 给 AI 定"人设"的消息，只给 AI 看不给用户看 | 导演给演员的角色说明 |
+| temperature | 控制回答"随机性"的参数，0=每次都一样，2=天马行空 | 调音台的混响旋钮 |
+| streaming | 回复一个字一个字往外蹦，不用等完整结果 | 打字机效果 |
+| 多轮对话 | 把之前的问答重新打包在 messages 里发回去 | 每次重新递交完整案卷 |
+| 贪心解码 | temperature=0，每次只选概率最高的下一个字 | 每次都走最优分叉路口 |
+
+
+写了什么代码
+
+| 文件 | 作用 |
+|------|------|
+| src/study_agent/openai_demo.py | 6 个示例（基础对话、system prompt、temperature、streaming、多轮对话、异常处理） |
+| .env | DeepSeek API Key + base_url + 模型名配置 |
+
+
+关键代码结构
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-xxx",                          # 你的 Key
+    base_url="https://api.deepseek.com"        # 指向哪家厂商
+)
+
+response = client.chat.completions.create(
+    model="deepseek-chat",
+    messages=[
+        {"role": "system", "content": "你是..."},     # 定人设
+        {"role": "user", "content": "用户的问题"},      # 用户说的
+        {"role": "assistant", "content": "AI之前的回复"}, # 上下文记忆
+    ],
+    temperature=1.0,        # 创造力旋钮
+    stream=False,           # 是否逐字输出
+)
+```
+
+
+踩过的坑
+
+1. 问题：OpenAI 在国内网络环境下无法直接访问
+   原因：GFW 墙掉了 api.openai.com
+   解决：改用 DeepSeek 的 API（OpenAI 兼容格式），只改了 base_url 和 model 名字，代码其他部分一行没动
+
+2. 问题：Windows 命令行打印中文乱码，报 UnicodeEncodeError (gbk)
+   原因：Windows 终端默认用 GBK 编码，emoji 和部分特殊汉字超出 GBK 范围
+   解决：在脚本开头加 sys.stdout.reconfigure(encoding="utf-8")
+
+3. 问题：API Key 不小心明文发在了聊天里
+   原因：以为 Key 像普通配置一样可以随便发
+   解决：Key 已写入 .env（被 .gitignore 保护），建议去 DeepSeek 后台重新生成 Key 并把旧的作废
+
+
+发现的重要认知
+
+1. OpenAI 兼容格式是行业标准——DeepSeek、Moonshot、智谱都用这套格式，学会一次到处能用
+2. LLM 本身没有记忆——看到的多轮对话只是把完整历史重新发了一遍，messages 越来越长，花更多的钱
+3. temperature=0 就是贪心算法——在所有候选字里每次都选概率最高的那个
+4. 我的"记忆"和你的 demo_multi_turn 原理完全一样——Claude Code 把整个对话历史打包成 messages 发给服务器
+
+
+明天要学
+
+[ ] Week 1 Day 4 — Anthropic SDK + 国产模型
+
+
+自我评估
+
+[x] 我能用自己的话解释 SDK 和 API 的区别
+[x] 我能手动写出调用 LLM 的 messages 三层结构
+[x] 我理解 temperature 的原理（概率分布拉伸/压缩）
+[x] 我理解为什么 AI "没有记忆"但看起来像有
+[x] 我知道 OpenAI 兼容格式意味着什么

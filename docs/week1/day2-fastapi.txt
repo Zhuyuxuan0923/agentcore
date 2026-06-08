@@ -1,0 +1,74 @@
+Week 1 Day 2 — FastAPI 速通
+
+日期：2026-05-23
+学习时长：约 2 小时
+
+今天学了什么
+
+1. 理解了 API 是什么——用"餐厅服务员"来类比：API 是前后端之间的传话人
+2. 掌握了 HTTP 的 5 种方法：GET（看）、POST（新建）、PUT（整体换）、PATCH（改一部分）、DELETE（删）
+3. 用 FastAPI写了第一个 Web API，跑了 `GET /` 和 `GET /books/{id}` 两个接口
+4. 体验了 **类型注解的威力**：写 `book_id: int` 后，FastAPI 自动拒绝 `/books/abc` 这种非法请求（返回 422），不用自己写校验代码
+5. 通过三个"故意写错的端点"，看到了**没有类型校验、不处理异常、返回值类型不匹配**会带来什么后果
+
+## 核心概念
+
+| 概念 | 一句话解释 | 类比 |
+|------|-----------|------|
+| **API** | 前后端之间的"传话人"，定义了什么可以请求、怎么请求 | 餐厅服务员——你通过他点菜，不能直接进厨房 |
+| **HTTP 方法** | 你和服务器说话的几种固定"问法" | 菜单上的操作：看菜单(GET)、下单(POST)、退菜(DELETE) |
+| **FastAPI** | 帮你写"服务员逻辑"的 Python 框架 | 服务员的培训手册 + 对讲机 |
+| **Uvicorn** | 让 Python 代码能监听网络端口的服务器 | 对讲机——让服务员能"听到"HTTP 请求 |
+| **路由/端点** | URL 和函数的对应关系 | 前台贴的表：找张三→302室，找李四→401室 |
+| **路径参数 `{book_id}`** | URL 里的动态占位符，访问时填入具体值 | `/books/3` → `book_id = 3` |
+| **类型注解 `: int`** | 告诉 FastAPI"这个参数应该是什么类型" | 门卫——不是这个类型的直接挡回去（422） |
+| **Swagger `/docs`** | FastAPI 自动生成的可交互 API 文档 | 菜单 + 试吃——能看能吃 |
+| **Pydantic** | FastAPI 背后的数据校验引擎 | 验菜员——上菜前先检查对不对 |
+
+## 写了什么代码
+
+| 文件 | 作用 |
+|------|------|
+| `src/study_agent/main.py` | 第一个 FastAPI 应用——图书查询 API，包含 4 个端点（1 个正常 + 3 个教学反例） |
+
+### 关键代码结构
+
+```python
+from fastapi import FastAPI            # 引入框架
+
+app = FastAPI(...)                     # 创建"服务员"
+
+@app.get("/books/{book_id}")           # 贴标签：这个 URL 归下面这个函数管
+def get_book(book_id: int) -> dict:    # :int = 自动校验，->dict = 返回值类型
+    ...
+    return books[book_id]
+```
+
+### 启动命令
+
+```bash
+poetry run uvicorn src.study_agent.main:app --reload --port 8000
+#                    ^^^^^^^^^^^^^^^^^^^^^^^^   ^^^^^^^^
+#                    "哪个文件:哪个服务员"         改代码自动重启
+```
+
+## 踩过的坑
+
+1. **问题**：修改代码后访问新端点一直返回 404 Not Found
+   **原因**：Windows 上残留了 11 个旧 Python 进程，占着端口导致新代码没生效
+   **解决**：`taskkill /F /IM python.exe` 杀干净后重启
+
+2. **问题**：`/bad-book/abc` 返回的是 500 Internal Server Error 而不是友好的错误提示
+   **原因**：路径参数没写 `: int`，字符串 `"abc"` 直接传进了 `books["abc"]`，字典没有这个 key 导致 KeyError
+   **解决**：给路径参数加上类型注解 `book_id: int`，FastAPI 在调用函数前就会校验
+
+## 明天要学
+
+- [ ] Week 1 Day 3 — OpenAI SDK 深度使用
+- [ ] Week 1 Day 4 — Anthropic SDK + 国产模型
+
+## 自我评估
+
+- [x] 我能用自己的话解释今天学到的每个概念
+- [x] 我能不看代码复述今天写过的代码逻辑
+- [x] 我理解今天每个工具"解决了什么问题"

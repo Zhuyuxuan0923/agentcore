@@ -1,0 +1,139 @@
+Week 1 Day 6 学习日志 — 项目骨架搭建
+==========================================
+
+日期：2026-06-08
+耗时：约 2 小时
+主题：Python 包的结构设计
+
+
+一、今天做了什么
+===============
+
+把 Week 1 前面 5 天写的代码从"平铺在一堆文件里"重组成"有层次结构的 Python 包"。
+
+【之前】6 个 .py 文件全堆在 src/study_agent/ 下面，互相之间的关系不清晰。
+【之后】按职责分成 3 个子模块——config（配置）、llm（调用）、tools（工具）。
+
+  study_agent/
+  ├── config/          配置中心
+  │   └── settings.py  Provider 通讯录 + 默认模型 + LLMConfig
+  ├── llm/             LLM 调用层
+  │   ├── client.py    统一客户端（5 家厂商一键切换）
+  │   └── retry.py     重试机制（指数退避 + 智能判断）
+  ├── tools/           工具抽象层（Week 2 的地基）
+  │   └── base.py      BaseTool / ToolDefinition / ToolParameter
+  └── __init__.py      包入口，一键导出所有核心类
+
+
+二、学到的核心概念
+==================
+
+1. Python 包（Package）
+
+  是什么：一个包含 __init__.py 的文件夹。Python 把它当成一个"模块组"来对待。
+  生活类比：房间里的衣柜加了隔层。以前所有衣服堆在一起，现在上衣一个抽屉、裤子一个抽屉、袜子一个抽屉。
+  为什么需要：
+    - 导入清晰：from study_agent.llm import LLMClient 一眼就知道"这是 LLM 模块里的客户端"
+    - 职责分离：改配置只动 config，改重试逻辑只动 retry，互不影响
+    - 面试能讲："你的项目怎么组织的？"→ 能画出清晰的模块图
+
+2. __init__.py 的作用
+
+  是什么：放在文件夹里的一个特殊文件，告诉 Python "这个文件夹是一个包"。
+  两个作用：
+    ① 标记：Python 看到 __init__.py 才知道"哦，这个文件夹可以 import"
+    ② 导出：在 __init__.py 里写导入语句，别人就可以从上层直接导入
+
+  有 __init__.py 帮你导出：
+    from study_agent import LLMClient          ← 简洁
+
+  没有 __init__.py 的话：
+    from study_agent.llm.client import LLMClient  ← 要记住完整路径
+
+3. @dataclass — 自动生成样板代码
+
+  是什么：一个装饰器，自动帮你写 __init__ 方法。
+  痛点：定义一个有 6 个字段的配置类，手写 __init__ 需要 12 行重复代码。@dataclass 帮你自动生成。
+  类比：你去餐厅点菜，不需要自己进厨房炒菜。你声明字段（点菜），@dataclass 生成代码（厨师炒菜）。
+
+  @dataclass
+  class LLMConfig:
+      provider: str
+      model: str
+      api_key: str
+      base_url: str | None = None
+      sdk_type: str = "openai"
+      max_retries: int = 3
+      # 只声明了 6 行，Python 自动生成了 __init__、__repr__、__eq__
+
+4. TypedDict — 给字典贴类型标签
+
+  是什么：一种"契约字典"。告诉 MyPy：这个字典里一定有哪些 key，每个 key 的值是什么类型。
+  为什么需要：普通的 dict 里 MyPy 不知道有什么字段。取 cfg["base_url"] 时 MyPy 会报警"我不知道这个 key 存不存在"。用了 TypedDict 后，MyPy 就知道"OK，base_url 一定存在，类型是 str | None"。
+
+5. @abstractmethod — 强制子类实现
+
+  是什么：在基类里声明一个方法，但不写实现。谁继承它，谁必须自己实现这个方法。
+  类比：签合同。BaseTool 规定"想当工具的类必须填定义表、实现 execute()"。不填？Python 不让你创建实例。
+
+
+三、接触的新概念速查表
+======================
+
+  @dataclass       → 自动生成 __init__               → 定义配置类/数据类时
+  TypedDict        → 给字典加类型约束                  → 字典结构固定、想让 MyPy 检查时
+  @property        → 让方法像属性一样访问              → 不想写括号 () 时
+  @abstractmethod  → 强制子类实现                      → 定义基类/接口时
+  @classmethod     → 方法属于类，不属于实例            → 做"工厂方法"（如 from_env()）时
+  __all__          → 控制 from xxx import * 导出什么   → __init__.py 里
+  ABC              → Abstract Base Class，抽象基类     → 定义不能被直接实例化的类
+
+
+四、为什么这样设计（面试可能问）
+================================
+
+Q：你的 agent-core 包为什么分三个模块？
+
+A：按职责分离。config 管"连哪家、用什么 Key"——换厂商只改配置不动代码。llm 管"怎么调"——统一接口，屏蔽 OpenAI 和 Anthropic SDK 的差异。tools 管"能做什么"——定义工具的标准格式，让 LLM 能理解和使用。三者各管各的，修改一个不影响另外两个。
+
+Q：为什么 LLMClient 不直接写死用某家 SDK？
+
+A：因为实际项目中模型是会换的——今天用 DeepSeek（便宜），明天发现效果不好换 Claude，后天老板要求支持国产模型。如果到处写 if provider == "openai":，每加一家就要改 10 处。用统一接口 + 配置字典，加新厂商只需要在 PROVIDER_CONFIGS 里加 4 行。
+
+
+五、检验：能回答这些问题吗？
+=============================
+
+1. 加一家新的 LLM 厂商（比如"百度的文心一言"）需要改哪几个文件？
+2. from study_agent import LLMClient 这行导入是怎么一层层找到 client.py 里的类的？
+3. 如果 retry.py 里的重试逻辑出 bug 了，会影响 config/ 模块吗？为什么？
+
+
+答案：
+  1. 只需要改 config/settings.py：在 PROVIDER_CONFIGS 和 DEFAULT_MODELS 各加一行。不需要动 llm/client.py 和 llm/retry.py。
+
+  2. study_agent/__init__.py
+     -> from study_agent.llm import LLMClient
+     -> llm/__init__.py
+     -> from study_agent.llm.client import LLMClient
+     -> client.py 里的 class LLMClient。
+
+  3. 不会。config/ 不 import retry.py，两个模块之间没有依赖关系。这就是"职责分离"的好处——修 bug 的影响范围可控。
+
+
+六、下周预告
+============
+
+Week 2：Prompt Engineering + 结构化输出
+  - 精读 Anthropic Prompt Engineering Guide
+  - 用 Jinja2 实现 Prompt 模板系统
+  - 实现 Tool Calling 循环（LLM 决定调用哪个工具 → 执行 → 把结果喂回去）
+  - 今天写的 tools/base.py 会派上大用场
+
+
+七、今日 Git 提交建议
+======================
+
+git add src/study_agent/config/ src/study_agent/llm/ src/study_agent/tools/
+git add src/study_agent/__init__.py CLAUDE.md docs/week1/day6-学习日志.txt
+git commit -m "Day 6: 整合 agent-core 包结构（config / llm / tools 三模块）"

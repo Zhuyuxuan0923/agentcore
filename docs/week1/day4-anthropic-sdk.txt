@@ -1,0 +1,102 @@
+Week 1 Day 4 — Anthropic SDK + 统一 LLMClient 封装
+
+日期：2026-05-24
+学习时长：约 3 小时
+
+
+今天学了什么
+
+1. 安装了 Anthropic SDK（pip install anthropic），理解了两套 SDK 设计哲学的差异
+2. 掌握了 OpenAI SDK 和 Anthropic SDK 的 5 个关键区别：system prompt 位置、max_tokens 必填、streaming 结构、thinking 功能、content block
+3. 理解了为什么需要封装统一 LLMClient——不同 SDK 的 API 细节不同，换模型不该改业务代码
+4. 实现了一个支持 5 家 provider（OpenAI/Anthropic/DeepSeek/智谱/Moonshot）的统一客户端，实际用 DeepSeek 跑通了全部接口
+
+
+核心概念
+
+| 概念 | 一句话解释 | 类比 |
+|------|-----------|------|
+| Anthropic SDK | 调用 Claude 模型的官方工具包，和 OpenAI SDK 是竞争关系 | 同一道菜（AI 对话），两家不同的外卖平台 |
+| system 独立参数 | Anthropic 把 system prompt 放在对话外面，当作"规则布告栏" | OpenAI: 导演混在演员里说戏 / Anthropic: 导演站在镜头外举提示板 |
+| max_tokens 必填 | Anthropic 强制你每次设输出上限，不设就报错 | 自助餐厅（OpenAI）vs 定食套餐（Anthropic，自己定分量） |
+| thinking | Claude 独有的"展示推理草稿纸"功能 | 数学考试要求写出解题步骤，不只要最终答案 |
+| content block | Anthropic 的消息内容是列表，可混排文字+图片+工具调用 | Word 文档的段落——可以插文字、图片、表格，混着排 |
+| SDK 抽象层 | 写一套统一的 chat() 接口，内部根据 provider 分派到不同 SDK | 万能遥控器——按同一个键，自动判断是电视还是空调的信号 |
+| provider | LLM 服务的供应商，每家有自己的 API 格式和定价 | 快递公司——顺丰/圆通/京东，都能送货，价格速度不同 |
+| 工厂方法 from_env() | 从环境变量读取当前用哪家 provider，代码里不用写死 | 墙上的开关——你拨到哪个档位，电路就接通哪条线 |
+
+
+写了什么代码
+
+| 文件 | 作用 |
+|------|------|
+| src/study_agent/anthropic_demo.py | 5 组对比示例，展示 Anthropic SDK 和 OpenAI SDK 的每个区别 |
+| src/study_agent/llm_client.py | 统一 LLMClient 类，支持 5 家 provider 切换，统一 chat() 和 chat_stream() 接口 |
+| pyproject.toml | 新增 anthropic 依赖 |
+
+
+关键代码结构
+
+```python
+# 统一客户端 —— 一行切换模型
+from study_agent.llm_client import LLMClient
+
+# 方式 1：环境变量（推荐）
+client = LLMClient.from_env()
+# $env:LLM_PROVIDER="deepseek"   → 自动选 DeepSeek
+# $env:LLM_PROVIDER="anthropic"  → 自动选 Claude
+
+# 方式 2：直接指定
+client = LLMClient(provider="zhipu", model="glm-4-flash")
+
+# 统一接口
+reply = client.chat("什么是递归？")                      # 非流式
+reply = client.chat("你好", system="你是助手")           # 带 system prompt
+for chunk in client.chat_stream("讲个故事"):             # 流式
+    print(chunk, end="")
+```
+
+OpenAI SDK vs Anthropic SDK 核心差异速查
+
+| 维度 | OpenAI SDK | Anthropic SDK |
+|------|-----------|---------------|
+| 调用方法 | client.chat.completions.create() | client.messages.create() |
+| system prompt | messages 数组里 {role:"system", ...} | 独立参数 system="..." |
+| max_tokens | 可选（有默认值） | 必填！不设直接报错 |
+| 回复取值 | response.choices[0].message.content | response.content[0].text |
+| 流式取值 | chunk.choices[0].delta.content | stream.text_stream |
+| 思考过程 | o1 系列有但不开放细节 | thinking: {enabled, budget_tokens} |
+| content 类型 | 纯字符串 | list[ContentBlock] |
+
+
+踩过的坑
+
+1. 问题：Anthropic SDK 在没有 API Key 时也会报错（不是只在实际调用时）？
+   原因：client.messages.create() 才真正发请求，创建 Anthropic() 对象不检查 Key
+   解决：脚本里先判断 os.getenv("ANTHROPIC_API_KEY") 是否存在，没有就跳过热身演示但代码逻辑仍然可见
+
+2. 问题：Ruff 报了 Iterator 应该从 collections.abc 导入而不是 typing
+   原因：Python 3.9+ 推荐从 collections.abc 导入泛型类型，typing.Iterator 已标记为废弃
+   解决：改为 from collections.abc import Iterator
+
+
+发现的重要认知
+
+1. 国产模型几乎全部采用 OpenAI 兼容格式——DeepSeek、智谱、Moonshot 都用同一套请求格式。这意味着只需学两套 SDK（OpenAI + Anthropic）就能覆盖几乎所有主流 LLM
+2. Anthropic 的 SDK 设计比 OpenAI 更"强迫你做正确的事"——max_tokens 必填是逼你控制成本，system 独立参数是让 prompt 更难被覆盖
+3. 封装抽象层的真正价值：不是在展示技术能力，而是让换模型的成本降为零。面试常问"你们的 LLM 抽象层怎么设计的"
+4. LLM_PROVIDER 环境变量 + from_env() 工厂方法的组合，本质就是"策略模式"——运行时决定用哪个策略（哪家模型），编译时不绑定
+
+
+明天要学
+
+[x] Week 1 Day 5 — 错误处理与重试：实现 exponential backoff、rate limit 处理、stream 中断恢复，用 tenacity 库
+
+
+自我评估
+
+[x] 我能说出 OpenAI SDK 和 Anthropic SDK 的 3 个以上关键区别
+[x] 我理解为什么 Anthropic 把 system 设计成独立参数
+[x] 我能从零写出 LLMClient 的 chat() 和 chat_stream() 方法
+[x] 我理解 provider 切换的实现原理——不是 if-else 堆砌，是策略分派
+[x] 我知道怎么加一个新的 provider（在 PROVIDER_CONFIGS 里加一行，DEFAULT_MODELS 里加一行）

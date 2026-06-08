@@ -1,0 +1,37 @@
+# Pre-commit hooks 骨架 —— 你重点检查和修改 hooks 列表
+# 运行: pre-commit run --all-files  (手动全量检查)
+# 安装: pre-commit install            (提交时自动触发)
+repos:
+  # ---------- 通用文件检查 ----------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+
+  # ---------- Black 格式化 ----------
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 25.1.0
+    hooks:
+      - id: black
+
+  # ---------- Ruff 检查 (仅 lint，不做 format) ----------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.13
+    hooks:
+      - id: ruff
+        args: ["--fix", "--config", "pyproject.toml"]
+
+  # ---------- MyPy 类型检查 ----------
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.20.0
+    hooks:
+      - id: mypy
+        args: ["--config-file", "pyproject.toml"]
+        additional_dependencies: []
+        # 后续添加依赖后在这里补充，如:
+        # additional_dependencies: ["types-requests", "types-pyyaml"]
