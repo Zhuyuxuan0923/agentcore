@@ -30,6 +30,11 @@ poetry.lock
 # Claude Code (contains local permissions with potential API keys)
 .claude/
 
+# Personal learning files (not part of the package)
+CLAUDE.md
+16*.md
+16*.html
+
 # OS
 .DS_Store
 Thumbs.db
