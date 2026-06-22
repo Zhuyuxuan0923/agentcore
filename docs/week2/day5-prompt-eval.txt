@@ -1,0 +1,171 @@
+Week 2 Day 5 — Prompt 评测学习日志
+====================================
+日期：2026-06-12
+主题：写评测脚本，用 50 条测试用例对比 3 种 prompt 写法的准确率
+
+
+一、为什么需要评测 Prompt？
+==========================
+
+写 prompt 像"调音"——你凭感觉改一个词，觉得更好了，但真的是吗？
+没有评测就像没有考试的学习——你没有数据证明自己真的进步了。
+
+评测做的事：把"这个 prompt 好像更好"变成"这个 prompt 的准确率高 12 个百分点"。
+
+核心方法：
+  同一批测试用例（有标准答案）
+    ├── 用 Prompt A 跑 → 得分 60%
+    ├── 用 Prompt B 跑 → 得分 82%
+    └── 用 Prompt C 跑 → 得分 94%
+  → 结论：Prompt C 最好，好在哪里？每个字段的准确率都高。
+
+
+二、三种 Prompt 风格的对比
+=========================
+
+┌──────────────┬──────────────────────┬───────────────────────┐
+│ 风格          │ System Prompt 内容    │ 类比                  │
+├──────────────┼──────────────────────┼───────────────────────┤
+│ ① minimal    │ 无 system prompt      │ 对实习生说"去写报告"   │
+│ ② structured │ 角色+分类标准+输出规则 │ 给他模板+格式+评价标准  │
+│ ③ fewshot    │ ②的全部 + 3个范例     │ 给他模板+3份参考样例    │
+└──────────────┴──────────────────────┴───────────────────────┘
+
+风格 ① 的问题：
+  - 没定义 category 有哪些选项 → LLM 可能自创分类（"payment" 而不是 "billing"）
+  - 没定义 priority 判断标准 → LLM 凭感觉标，不一致
+  - 没设 system prompt → LLM 没有任何角色约束，行为更随机
+
+风格 ② 的改进：
+  - 明确 category 五选一，且给了每类的定义
+  - 给出 priority 判断标准（钱/安全/数据=high）
+  - 给出 sentiment 判断标准（生气=negative，没情绪=neutral）
+
+风格 ③ 的再改进：
+  - 在 ② 的基础上加了 3 个"输入→输出"范例
+  - LLM 通过这些范例"学会"你的判断偏好
+  - 尤其是边界 case（如"功能找不到入口"→product+medium+negative）
+
+
+三、评测任务设计：客服消息三分类
+================================
+
+分类维度：
+  category  → billing / technical / account / product / complaint
+  priority  → high / medium / low
+  sentiment → negative / neutral / positive
+
+为什么选这个任务？
+  1. 有明确的标准答案（人类可以判断对错）
+  2. 三种 prompt 风格会产生明显差异
+  3. 和真实业务场景一致（任何一个 SaaS 产品都需要客服分类）
+  4. 有些 case 有歧义（需要推理，不是简单的关键词匹配）
+
+测试用例构成（50 条）：
+  - billing:    10 条（扣款/退款/发票/订阅）
+  - technical:  10 条（闪退/报错/兼容性/性能）
+  - account:    10 条（登录/密码/安全/注册）
+  - product:    10 条（功能咨询/对比/集成）
+  - complaint:  10 条（投诉/不满/赔偿/失望）
+  priority: high~15 / medium~20 / low~15
+  sentiment: negative~20 / neutral~20 / positive~10
+
+
+四、评测指标（四个维度）
+========================
+
+每一条测试用例跑完后，检查四个东西：
+
+  ① JSON 合法性
+     → raw_response 能被 json.loads() 解析吗？
+     → 如果 ① 失败，后续指标都无意义（因为没有 parsed 对象）
+
+  ② 字段完整性
+     → category / priority / sentiment 三个字段都在吗？
+     → 缺任何一个是"不完整"
+
+  ③ 逐字段准确性
+     → category 的值对吗？（"billing" vs 预期 "billing"）
+     → priority 的值对吗？
+     → sentiment 的值对吗？
+
+  ④ 综合通过率
+     → ①②③ 全部通过才算 "pass"
+     → overall_rate = pass 数量 / 总用例数
+
+
+五、代码架构
+============
+
+新增文件：
+  src/study_agent/prompt/
+  ├── evaluator.py        ← NEW：评测引擎
+  │   ├── EvalCase             数据类：一条测试用例
+  │   ├── EvalResult           数据类：一次评测结果
+  │   ├── CLASSIFY_SCHEMA_DEF  Schema 定义
+  │   └── PromptEvaluator      核心评测类
+  ├── test_cases.py        ← NEW：50 条测试用例
+  │   └── CLASSIFICATION_CASES  全部用例的列表
+  └── __init__.py          已更新：导出新类
+
+  src/study_agent/
+  └── w2d5_demo.py          ← NEW：演示脚本
+
+PromptEvaluator 的核心方法：
+  evaluate_one(case, style, build_prompt) → 单次评测
+  run_batch(cases, styles)               → 批量评测
+  summarize(results)                     → 按风格汇总统计
+  report(results)                        → 生成 Markdown 报告
+  export_csv(results)                    → 导出 CSV
+
+
+六、演示脚本怎么跑
+==================
+
+  # 快速模式（只跑 10 条，约 1 分钟）
+  python src/study_agent/w2d5_demo.py --quick
+
+  # 完整评测（50 条 × 3 风格 = 150 次调用，约 2-5 分钟）
+  python src/study_agent/w2d5_demo.py
+
+  # 指定 provider
+  $env:LLM_PROVIDER="anthropic"
+  python src/study_agent/w2d5_demo.py
+
+  # 导出详细 CSV
+  python src/study_agent/w2d5_demo.py --export-csv results.csv
+
+
+七、关键收获
+============
+
+  1. Prompt 评测 = 把"感觉"变成"数字"
+     没数据之前，"这个 prompt 够好了"只是你的臆测。
+
+  2. 好 prompt 的三个层次：
+     层次 0 (minimal)： 只告诉他做什么 → 他自己猜规则
+     层次 1 (structured)：告诉他规则 → 按规则来
+     层次 2 (fewshot)：给他看例题 → 最快理解你的期望
+
+  3. System prompt 是低成本、高回报的优化
+     Structured 比 minimal 多写 ~200 字，准确率可能翻倍。
+     这 200 字是一次性投入，每次调用都受益。
+
+  4. Few-Shot 范例的选择有讲究
+     - 覆盖不同类别（不能 3 个例子都是 billing）
+     - 覆盖边界 case（容易判错的反而最有价值）
+     - 3 个刚好（1 个太少，5+ 个太多吃 token）
+
+  5. 评测框架本身也是可复用的
+     以后每次优化 prompt，跑一次评测看分数有没有提升。
+     没有评测框架 = "我觉得 prompt 更好了"
+     有评测框架 = "准确率从 82% 提升到 94%"
+
+
+八、明日预告：Day 6 — System Prompt 设计实战
+============================================
+
+用今天的评测框架，给你的 Agent 写 3 个版本的 system prompt，
+跑分对比，选出最好的。
+
+关键：prompt 里要有角色、约束、输出格式、few-shot 示例。

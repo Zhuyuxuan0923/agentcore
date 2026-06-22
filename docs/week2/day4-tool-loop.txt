@@ -1,0 +1,160 @@
+Week 2 Day 4 — Tool Calling 循环学习日志
+============================================
+日期：2026-06-11
+主题：实现完整的 Tool Calling 循环——LLM 决策→执行→回传→再决策
+
+
+一、Day 3 → Day 4：从"单向提取"到"双向对话"
+==============================================
+
+Day 3 做的事：用工具定义约束 LLM 的输出格式
+  文本 → LLM → 结构化 JSON → 结束
+  工具只定义了"输出长什么样"，没有真正执行
+
+Day 4 做的事：让 LLM 真正"使用工具"
+  用户任务 → LLM → "我需要查数据" → 执行工具 → 结果喂回
+  → LLM → "数据拿到了，还需要算" → 执行工具 → 结果喂回
+  → LLM → "好了，这是答案" → 输出
+
+核心循环（ASCII 流程图）：
+
+  用户说："帮我查今天日期，然后算几号乘以100"
+
+  Round 1 ─────────────────────
+  LLM 收到任务，看到有 datetime 工具
+  → 决定调用 datetime()
+  → 拿到结果："2026年6月11日 星期四"
+  → LLM 想："知道了，今天是11号，还需要算 11×100"
+
+  Round 2 ─────────────────────
+  LLM 看到前一轮的结果中有日期
+  → 决定调用 calculator(expression="11*100")
+  → 拿到结果："1100"
+  → LLM 想："算完了，可以回答了"
+
+  Round 3 ─────────────────────
+  LLM 拿到所有需要的信息
+  → 不调工具了，直接输出最终答案
+  → "今天是6月11日星期四，11×100=1100"
+
+
+二、两种 Tool Calling 协议的区别
+================================
+
+OpenAI 协议（DeepSeek / GLM-4 / Moonshot 用）：
+  - 发工具定义：tools=[{type:"function", function:{name, description, parameters}}]
+  - LLM 返回    ：message.tool_calls[{id, function:{name, arguments}}]
+  - 结果回传    ：messages.append({role:"tool", tool_call_id, content})
+
+Anthropic 协议（Claude 用）：
+  - 发工具定义：tools=[{name, description, input_schema}]
+  - LLM 返回    ：content 列表中的 tool_use 块（type="tool_use", id, name, input）
+  - 结果回传    ：messages.append({role:"user", content:[{type:"tool_result", ...}]})
+
+为什么两种协议不统一？
+  Anthropic 和 OpenAI 各自独立设计了 Tool Calling。
+  但本质思想一样：告诉 LLM "你可以调用这些函数"→LLM 返回调用请求→你执行后回传结果。
+
+
+三、ToolCallLoop 的设计
+========================
+
+文件：src/study_agent/tools/tool_loop.py
+
+核心类：ToolCallLoop
+  - 持有 LLMClient + 工具清单
+  - run(user_message, system) → 启动循环，返回最终答案
+  - 内部根据 client.sdk_type 分派到 _run_openai_loop 或 _run_anthropic_loop
+
+关键设计决策：
+
+  1. 为什么 tool_map 用 dict 而不是 list？
+     工具名 → 工具实例的映射，O(1) 查找。
+     LLM 返回的是工具名（字符串），需要快速定位到实例去 execute()。
+
+  2. 为什么循环次数上限是 5？
+     防止 LLM 陷入"查了又查"的死循环。
+     经验值：大部分多步骤任务 2-3 轮就够了，5 轮是安全边界。
+
+  3. 为什么工具执行的错误要包装成字符串返回给 LLM？
+     如果工具执行失败（比如 calculator 收到非法表达式），
+     不能静默——要把错误信息喂回 LLM，让它知道"这个调用失败了，
+     你可能需要换个方式"。
+
+  4. 两个协议的消息格式为什么不统一？
+     OpenAI 把 tool_result 作为独立的 role:"tool" 消息；
+     Anthropic 把 tool_result 包在 user 消息的内容块里。
+     这是两个 SDK 设计的差异，强行统一反而会让代码更难理解。
+
+
+四、安全计算器的设计（builtin_tools.py）
+========================================
+
+CalculatorTool 是最容易出安全问题的工具——如果直接用 Python 的 eval()，
+LLM 可能生成恶意代码：
+
+  ❌ eval("__import__('os').system('rm -rf /')")  → 执行系统命令
+
+安全措施（三层防御）：
+  1. ast.parse() 解析表达式为抽象语法树（不执行）
+  2. ast.walk() 遍历每个节点，检查是否有危险的函数调用或属性访问
+  3. 白名单编译执行——只允许 sqrt、abs、pow 等数学函数
+
+这就是"安全计算器"——只做数学，不做任何系统操作。
+
+
+五、今天建的代码
+================
+
+新增文件：
+  src/study_agent/tools/
+  ├── tool_loop.py        ← ToolCallLoop：LLM 决策→执行→回传循环
+  ├── builtin_tools.py    ← 三个具体工具：Calculator / DateTime / TextStats
+  └── __init__.py          ← 已更新：导出所有新类
+
+  src/study_agent/
+  └── w2d4_demo.py         ← 演示脚本：5 个场景展示循环过程
+
+
+六、演示脚本怎么跑
+==================
+
+  # 跑全部 5 个场景
+  python src/study_agent/w2d4_demo.py
+
+  # 只跑指定场景（1-5）
+  python src/study_agent/w2d4_demo.py --scene 1
+
+  场景 1：单工具调用——查今天日期（1轮）
+  场景 2：多步推理——日期计算（2-3轮）
+  场景 3：安全计算器——多步数学（2轮）
+  场景 4：文本处理——统计+转换+再转换（2-3轮）
+  场景 5：跨工具协作——日期+计算（2轮，datetime + calculator）
+
+
+七、核心收获
+============
+
+  1. Tool Calling 循环 = Agent 的"大脑"
+     LLM 自主决定：用哪个工具、什么参数、拿到结果后下一步做什么
+
+  2. 循环的核心是"消息历史累积"
+     每次工具调用都追加到 messages 里，LLM 能看到完整的上下文
+
+  3. 两种协议（OpenAI vs Anthropic）本质相同，消息格式不同
+
+  4. 安全是工具设计的第一优先级
+     绝不能给 LLM eval() 权限或用 shell=True 执行命令
+
+  5. 限制循环轮次防止死循环
+     生产环境中每轮都消耗 token（钱），必须有上限
+
+
+八、明日预告：Day 5 — Prompt 评测
+=================================
+
+写评测脚本，用 50 条测试用例对比 3 种 prompt 写法的准确率。
+输出评测报告（markdown 表格）。
+
+这两天建的 Tool Calling 循环和结构化输出会用上——
+评测框架会自动检测 LLM 输出的 JSON 合法性和字段完整性。

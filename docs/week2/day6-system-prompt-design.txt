@@ -1,0 +1,224 @@
+Week 2 Day 6 — System Prompt 设计实战学习日志
+==================================================
+日期：2026-06-13
+主题：用评测框架对比 3 种 prompt 设计哲学，理解"为什么某种写法更好"
+
+
+一、W2D6 和 W2D5 的区别
+========================
+
+W2D5 = 造评测工具（evaluator / test_cases / report）
+W2D6 = 用评测工具来指导 prompt 设计
+
+关系：
+  W2D5 造了"考试系统"（出题 + 批改 + 排名）
+  W2D6 是"模拟考试"——用三套不同的答题策略去考，看哪套分高
+
+核心问题：
+  面对同一个分类任务，不同的 prompt 设计哲学，效果差多少？
+  是"说清楚为什么"有用，还是"举反例"有用，还是"先想再说"有用？
+
+
+二、三种设计哲学详解
+====================
+
+┌────────────────────┬────────────────────────────┬──────────────────────┐
+│ 设计哲学            │ 核心思路                    │ 类比                  │
+├────────────────────┼────────────────────────────┼──────────────────────┤
+│ ① explain_why      │ 解释每个分类的业务目的      │ 告诉实习生"为什么要这  │
+│                    │ 让 LLM 理解分类的"意义"     │ 样做"，而不只是"这样  │
+│                    │ 而不只是"规则"              │ 做"                   │
+├────────────────────┼────────────────────────────┼──────────────────────┤
+│ ② negative_examples│ 给出常见错误 + 为什么错     │ 告诉实习生"哪些路看起  │
+│                    │ 用反例在边界上画警戒线      │ 来对但其实是死胡同"    │
+├────────────────────┼────────────────────────────┼──────────────────────┤
+│ ③ reasoning_template│ 给出思考步骤模板          │ 让实习生"先说思路再答  │
+│                    │ 先分析信号 -> 再判断       │ 题"，草稿纸不能省      │
+└────────────────────┴────────────────────────────┴──────────────────────┘
+
+① explain_why 的设计假设：
+  LLM 理解了分类的"业务目的"后，会在边界 case 上做出更符合人类期望的判断。
+  例如：不只是说"涉及钱 -> billing"，而是说"涉及钱 -> billing，
+  因为需要财务团队 30 分钟内响应，分错会导致用户金钱损失无法及时处理"。
+
+② negative_examples 的设计假设：
+  告诉 LLM "什么是 X"不如告诉它"什么不是 X"。
+  6 个陷阱覆盖了最常见的误判模式：
+    陷阱1：支付失败 ≠ technical（根因是钱，归 billing）
+    陷阱2：语气愤怒 ≠ complaint（如果涉及具体金钱，归 billing）
+    陷阱3：问订阅续费 ≠ account（涉及付费行为，归 billing）
+    陷阱4：问套餐方案 ≠ billing（只是了解功能差异，归 product）
+    陷阱5：描述功能不好用 ≠ complaint（可能只是 product 反馈）
+    陷阱6：数据丢失 ≠ technical（如果核心诉求是赔偿，归 complaint）
+
+③ reasoning_template 的设计假设（Chain-of-Thought）：
+  LLM 生成文本是逐 token 的——前面的 token 影响后面的 token。
+  如果第一步就跳到结论，后续会围绕结论展开，忽略不一致的信号。
+  如果第一步是"列出所有信号"，则所有信息都有机会被关注。
+  类比：做数学题时在草稿纸上列步骤的人比心算的人准确率高。
+
+
+三、实测结果（Quick 模式：10 条用例 × 3 种风格）
+================================================
+
+评测时间：2026-06-13
+模型：deepseek / deepseek-chat
+
+总览对比：
+
+| Prompt 风格           | JSON 合法率 | 字段完整率 | 综合通过率 | 平均耗时 |
+|-----------------------|-------------|------------|------------|----------|
+| negative_examples     | 100%        | 100%       | 80%        | 1161ms   |
+| explain_why           | 100%        | 100%       | 60%        | 1335ms   |
+| reasoning_template    | 100%        | 100%       | 30%        | 1832ms   |
+
+逐字段准确率：
+
+| Prompt 风格           | category | priority | sentiment |
+|-----------------------|----------|----------|-----------|
+| negative_examples     | 100%     | 90%      | 90%       |
+| explain_why           | 90%      | 100%     | 70%       |
+| reasoning_template    | 80%      | 70%      | 70%       |
+
+结论：
+  - 最佳风格：negative_examples（通过率 80%）
+  - 最差风格：reasoning_template（通过率 30%）
+  - 差距：50 个百分点
+
+
+四、结果分析 —— 为什么是这个排名？
+==================================
+
+1. negative_examples 为什么赢了？
+
+   反例策略直接标记了"容易搞混的边界"，相当于给 LLM 画了警戒线。
+   category 准确率 100% 说明：6 个陷阱有效地防止了分类错误。
+
+   反例的信息密度比正例高——一个反例"这不是 X，因为..."同时传达了：
+   - 什么不是 X（边界在哪）
+   - 为什么不是 X（判断原则）
+   - 那应该是什么（正确分类）
+
+2. explain_why 为什么居中？
+
+   sentiment 准确率只有 70%，说明"理解业务背景"对情感判断
+   帮助不大——情感判断更多依赖对用户语气的敏感度，而不是对业务的理解。
+
+   但 category 和 priority 准确率高（90% 和 100%），说明解释"为什么"
+   确实有助于分类决策——LLM 理解了每个分类的"精神"后，分类更准。
+
+3. reasoning_template 为什么最差？（这是一个重要的教训）
+
+   Chain-of-Thought 在论文里很有效，但在 deepseek-chat 上反而更差。
+
+   原因推测：
+   - LLM 先输出分析文本，再输出 JSON，分析部分的措辞可能"带偏"
+     后续的 JSON 输出（比如分析里写"这个用户很生气"，但最后
+      JSON 里 sentiment 却写了 neutral，自相矛盾）
+   - "先想再说"增加了输出长度，LLM 可能在长输出中"遗忘"了
+     前面的约束
+   - deepseek-chat 对混合格式（分析文字 + JSON）的处理不如
+     纯 JSON 输出稳定
+
+   教训：技术的好坏取决于执行环境。在 Claude 上有效的 CoT，
+   在 DeepSeek 上可能需要不同的实现方式。
+
+
+五、代码架构
+============
+
+新增文件：
+  src/study_agent/
+  └── w2d6_demo.py               ← NEW：三种设计哲学的对比评测脚本
+      ├── build_explain_why_prompt()         哲学 A：说清楚为什么
+      ├── build_negative_examples_prompt()   哲学 B：举反例
+      ├── build_reasoning_template_prompt()  哲学 C：推理模板
+      ├── build_w2d5_fewshot_prompt()        可选对照组（W2D5 最佳）
+      └── print_design_analysis()           设计哲学分析输出
+
+关键设计：
+  - 每种哲学是一个函数，签名统一为 (text: str) -> (system, user)
+  - 评测器（W2D5 的 PromptEvaluator）完全复用，一行没改
+  - 这意味着：只要按这个签名写新函数，就能评测任意 prompt 设计
+  - --compare-with-w2d5 标志可以把 W2D5 的 fewshot 作为对照组
+
+
+六、怎么跑
+==========
+
+  # 快速模式（10 条用例，约 30 秒）
+  cd "C:\Users\86136\Desktop\Study Agent"; python src/study_agent/w2d6_demo.py --quick
+
+  # 完整评测（50 条 × 3 风格 = 150 次调用，约 3 分钟）
+  cd "C:\Users\86136\Desktop\Study Agent"; python src/study_agent/w2d6_demo.py
+
+  # 与 W2D5 最佳风格对比（4 种风格 = 200 次调用，约 4 分钟）
+  cd "C:\Users\86136\Desktop\Study Agent"; python src/study_agent/w2d6_demo.py --compare-with-w2d5
+
+  # 导出 CSV
+  cd "C:\Users\86136\Desktop\Study Agent"; python src/study_agent/w2d6_demo.py --export-csv w2d6_results.csv
+
+
+七、关键收获
+============
+
+  1. Prompt 设计是工程，不是玄学
+     评测框架让你能用数据验证"哪种写法更好"。
+     没有评测 = "我觉得反例有用"
+     有评测 = "反例让 category 准确率从 90% 提升到 100%"
+
+  2. 反例（Negative Examples）是性价比最高的优化手段
+     6 个反例，每个 50 字，总计 300 字，换来 20 个百分点的提升。
+     反例同时传达了"边界在哪"和"为什么这是边界"。
+
+  3. Chain-of-Thought 不是万能药
+     在某些模型上（如 deepseek-chat），CoT 反而降低准确率。
+     原因：模型在"推理"和"输出"之间切换不稳定。
+     适用条件：模型本身推理能力强 + 输出格式要求简单。
+
+  4. System prompt 的 token 预算有限
+     三个 prompt 的长度对比：
+       explain_why:        ~1200 字（最详细）
+       negative_examples:  ~900 字（中等）
+       reasoning_template: ~700 字（最简洁但效果最差）
+     prompt 不是越长越好——信息密度比字数更重要。
+
+  5. 评测框架的可复用性
+     W2D6 的三种新 prompt 完全复用了 W2D5 的评测框架。
+     以后任何 prompt 优化，只需：
+       ① 写一个新的 build_xxx_prompt 函数
+       ② 加进 styles 字典
+       ③ 跑一次评测
+     → 立即知道你的改动是改善还是劣化。
+
+
+八、三个动手实验（✍️）
+======================
+
+脚本中有三处标记了 ✍️ 的区域，可以修改后重新跑 --quick 验证：
+
+  实验 1：修改 explain_why 中某个分类的"为什么"
+    比如把 billing 的"对应用户诉求"改成更准确的描述
+    -> 观察准确率是升还是降
+
+  实验 2：给 negative_examples 增加一条新的误判边界
+    观察 --quick 的失败案例，找一个 LLM 反复搞错的 pattern
+    -> 加一条新的陷阱标记，看准确率是否提升
+
+  实验 3：修改 reasoning_template 的推理步骤数量
+    把 3 步改成 5 步（更细粒度）或 2 步（更简洁）
+    -> 观察步骤数量对准确率的影响
+
+
+九、明日预告：Day 7 — 周复盘
+============================
+
+回顾 Week 2 全部内容：
+  Day 1: Prompt 工程理论（10 条核心原则）
+  Day 2: Jinja2 模板系统（PromptManager + FewShotManager）
+  Day 3: 结构化输出（JSON Mode + Tool Use + Function Call）
+  Day 4: Tool Calling 完整循环（Calculator / DateTime / TextStats）
+  Day 5: Prompt 评测框架（50 条用例 + 4 个指标 + Markdown 报告）
+  Day 6: System Prompt 设计实战（3 种设计哲学对比）
+
+整理本周踩过的坑、学到的原则、能写成文章的点。

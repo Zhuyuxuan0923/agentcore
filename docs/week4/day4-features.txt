@@ -1,0 +1,439 @@
+Week 4 Day 4 -- 特性完善：Markdown 渲染 + 代码高亮 + 交互细节
+================================================================
+日期：2026-06-22
+主题：让聊天界面真正可读——AI 输出的 Markdown 不再是纯文本
+前置：Day 2 后端 + Day 3 前端均已跑通
+
+
+零、今天的任务
+==============
+
+Day 3 有了聊天界面，但 AI 回复是这样的（原始文本）：
+
+  您的问题涉及三个方面：\n\n**第一，时间复杂度**：\n\n```python\n\
+  def bubble_sort(arr):\n    n = len(arr)\n    return arr\n```\n\n- 项\
+  目 A：O(n^2)[1]\n- 项目 B：O(n log n)[2]
+
+用户看到的是满屏的 **、```、\n 符号——这明显不是"产品"该有的样子。
+
+今天要做的事：
+  1. 让 AI 回复支持 Markdown 渲染（标题、列表、粗体、斜体、链接）
+  2. 让代码块有语法高亮（关键字、字符串、注释分色显示）
+  3. 解决 Markdown 渲染和引用 Badge 的冲突
+  4. 完善交互细节：对话删除、知识库删除
+
+读完这篇日志后，你应能：
+  1. 说出 Markdown 是什么，为什么 LLM 输出的是 Markdown
+  2. 理解 react-markdown 的工作原理（mdast -> hast -> React）
+  3. 说出"语法高亮"的三个核心着色规则（关键词、字符串、注释）
+  4. 理解为什么 [N] 引用和 Markdown 渲染会冲突，以及如何处理
+  5. 知道代码块的语言标注机制（```python -> Python 语法高亮）
+
+
+一、Markdown 是什么？
+====================
+
+▶ 生活类比：写菜单的两种方式
+
+  方式 A（纯文本）：
+    今日菜单 红烧排骨 38元 清蒸鲈鱼 58元 蒜蓉西兰花 22元 所有菜品含米饭
+
+  方式 B（有格式）：
+    # 今日菜单
+    - 红烧排骨 ...... 38元
+    - 清蒸鲈鱼 ...... 58元
+    - 蒜蓉西兰花 ... 22元
+    *所有菜品含米饭*
+
+  方式 B 就是 Markdown——用简单的符号标记格式，让纯文本也能"排版"。
+
+▶ Markdown 的核心语法（5 分钟速览）
+
+  标题：      # 一级标题    ## 二级标题    ### 三级标题
+  粗体/斜体： **粗体**      *斜体*
+  列表：      - 无序列表    1. 有序列表
+  代码：      `行内代码`    ```代码块```
+  链接：      [文字](URL)
+  引用：      > 引用文字
+  表格：
+    | 列A | 列B |
+    |-----|-----|
+    | 值1 | 值2 |
+
+  这些符号不是乱码——它们是一种约定。就像交通标志的形状约定好了一样，
+  三角形=警告，圆形=禁止。Markdown 的符号也是全球开发者约定好的。
+
+▶ 为什么 LLM 输出 Markdown？
+
+  LLM 的训练数据（互联网上的文章、代码、文档）大量使用 Markdown 格式。
+  GitHub 的 README、Stack Overflow 的回答、技术博客——全是 Markdown。
+  LLM 学到的就是"回答问题用 Markdown 格式"。
+
+  所以当你问"怎么用 Python 排序？"，LLM 回答：
+    "可以用 `sorted()` 函数：\n\n```python\nsorted([3, 1, 2])\n```"
+
+  这里 ```python 就是告诉读者"下面是一段 Python 代码"。
+  但如果前端不渲染，这些符号就会原样显示，用户看到的就是乱码。
+
+
+二、Markdown 渲染的原理——从文本到网页
+=======================================
+
+▶ 渲染（Rendering）是什么？
+
+  渲染就是把一种格式转成另一种格式。
+  类比：把菜谱（文字）做成一盘菜（实物）。
+  在浏览器里：把 Markdown 文本转成 HTML 元素。
+
+  例：
+    Markdown:         **重要提示**
+    渲染后 HTML:      <strong>重要提示</strong>
+    浏览器显示：      重要提示  （粗体）
+
+▶ 渲染的三步流水线
+
+  Markdown 文本
+       |
+       v
+  [Step 1] 解析 (Parse)    -> mdast 树（Markdown AST）
+       |                      把文本拆成有结构的"节点"——标题节点、段落节点、代码节点
+       v
+  [Step 2] 转换 (Transform) -> hast 树（HTML AST）
+       |                      把 Markdown 节点映射成 HTML 节点
+       v
+  [Step 3] 输出 (Output)    -> React 元素 / HTML 字符串
+                              react-markdown 在这一步变成 React 组件
+
+  什么是 AST？Abstract Syntax Tree——抽象语法树。
+  就是把一段文字按结构画成一棵树。
+
+  例："# 标题\n\n你好**世界**" 的 AST：
+    root
+    +-- heading (level: 1)
+    |   \-- text: "标题"
+    \-- paragraph
+        +-- text: "你好"
+        \-- strong
+            \-- text: "世界"
+
+  react-markdown 做的事情：
+    1. 用 remark 把 Markdown 解析成 mdast
+    2. 用 remark-rehype 把 mdast 转成 hast
+    3. 用 rehype-react 把 hast 转成 React.createElement() 调用
+
+
+三、语法高亮——代码不只是灰色的
+================================
+
+▶ 什么是语法高亮？
+
+  看这段没有高亮的代码：
+    def hello(name):
+        print(f"Hello, {name}")
+        return True
+
+  再看有高亮的：
+    def hello(name):           <- "def" 是紫色关键字
+        print(f"Hello, {name}")  <- "print" 是蓝色函数, "Hello..." 是绿色字符串
+        return True              <- "return" 是紫色关键字, "True" 是橙色常量
+
+  语法高亮 = 给代码的不同部分涂上不同颜色，让人一眼看出结构。
+
+▶ 高亮的三个核心规则
+
+  1. 关键词（Keywords）：if / else / def / return / import / class
+     -> 通常是醒目的颜色（紫/红/蓝），让人快速识别代码结构
+
+  2. 字符串（Strings）："hello" / 'world' / f"format"
+     -> 通常是绿色，一眼看出"这是数据，不是逻辑"
+
+  3. 注释（Comments）：# 这是注释 / // 这是注释
+     -> 通常是灰色/暗色，让人知道"这部分不影响程序运行"
+
+  还有：数字、函数名、类名、操作符……每种都有独特的颜色。
+
+▶ 语言标注——代码块的第一行
+
+  ```python          <- 这个 "python" 就是语言标注
+  def hello():
+      pass
+  ```
+
+  ```javascript     <- 这是 JavaScript
+  const x = 1;
+  ```
+
+  ```bash           <- 这是 Bash
+  echo "hello"
+  ```
+
+  有了语言标注，高亮器就知道该用哪种语言的规则来着色。
+  如果没有标注（只写 ```），高亮器就只能猜，效果就不好。
+
+  所以 LLM 的 System Prompt 里要求"代码块必须标注语言"很重要。
+
+
+四、引用 Badge 与 Markdown 渲染的冲突——今天的核心 Bug
+========================================================
+
+▶ 问题描述
+
+  AI 回复既包含 Markdown 格式，又包含引用编号 [1] [2]：
+
+    "冒泡排序的时间复杂度为 O(n^2)[1]，快速排序为 O(n log n)[2]。"
+
+  现在要做两件事：
+    1. 把 "O(n^2)" 渲染成 Markdown（可能有上下标等）
+    2. 把 [1] 替换成引用 Badge 组件
+
+  两个操作可能冲突：
+    - Markdown 会把 [1] 解释为链接语法的一部分（[text](url) 中的 [text]）
+    - 文本先 split 再分别渲染 Markdown，跨分割线的 Markdown 格式会断裂
+
+▶ 冲突场景 1：引用在粗体内部
+
+  原文：**重要结论[1]**请注意
+  split 后：["**重要结论", "[1]", "**请注意"]
+  分段渲染：第 1 段 **重要结论 没有闭合，第 3 段 ** 没有开头 -> 断裂！
+
+▶ 冲突场景 2：引用被误解为链接
+
+  原文：参见文档[1]和文档[2](https://example.com)
+  Markdown 可能把 [2](https://...) 解析为链接，但 [1] 是我们插入的引用。
+
+▶ 解决方案：分割 + 分段渲染 + 容错
+
+  核心思路：
+    1. 检测消息是否有引用，没有则直接渲染整个 Markdown
+    2. 有引用时：split 成片段 -> Markdown 片段用 react-markdown 渲染
+       -> 引用片段用 CitationBadge 渲染
+    3. 跨分割线的格式断裂：多数情况下引用跟在句子末尾，
+       不会出现在**粗体**或`代码`中间，实际影响小
+
+  这是一种务实的做法——处理 95% 的情况，保留 5% 的降级显示。
+  真要完美处理需要做 AST 级别的操作，对 Week 4 来说重点不在这里。
+
+
+五、代码块样式设计——融入 Warm Scholar 主题
+=============================================
+
+代码块的 CSS 需要考虑：
+
+  1. 头部栏（语言标签 + 文件图标）
+     - 显示语言名称（如 "python"）
+     - 使用琥珀色调，与整体暖色主题一致
+     - 左上角圆角，右下角直角
+
+  2. 代码区域
+     - 等宽字体（JetBrains Mono / Consolas）
+     - 背景色与主背景区分（略深一点的暖灰色）
+     - 合理的行高（1.7）让代码更可读
+
+  3. 语法高亮的颜色映射
+     - 关键字：暖棕/深橙
+     - 字符串：橄榄绿
+     - 注释：灰棕（斜体）
+     - 函数名：深棕
+     - 数字：暖琥珀
+
+  4. 滚动条（长代码行）
+     - 水平滚动而不是换行（保持代码缩进结构）
+     - 细滚动条，颜色与 UI 统一
+
+
+六、Bug 排查：上传文件后分块错乱，引用全是乱的一一今天的第二个 Bug
+====================================================================
+
+▶ 现象描述
+
+  上传一个员工手册文档后，提问 "年假怎么申请？"
+  AI 引用的来源文本是半截句子，比如：
+    "冒泡排序的时间复杂度是" (前半句)
+    "O(n^2)" (后半句，在另一个块里)
+
+  一句话被拦腰切成两半，导致引用标注看起来毫无逻辑。
+
+▶ 排查过程
+
+  先定位到分块入口 `chunk_document()`，用一段测试文本跑一遍：
+
+    1. 确认策略选的是 RECURSIVE（按段落/句子边界切分）-- 正确
+    2. 确认 chunk_size=200, overlap=40 -- 参数合理
+    3. 打印切出来的每个块...
+
+  发现块不是按段落/句子切的！而是按固定字符位置切的。
+
+  追踪代码流程：
+
+    def chunk_document(text, strategy=RECURSIVE, chunk_size=200, overlap=40):
+        # Step 1: 按策略切分（正确）
+        chunks = recursive_chunk(text, chunk_size)  # -> 自然边界块
+
+        # Step 2: overlap > 0 时...
+        if overlap > 0:
+            chunks = chunk_with_overlap(text, chunk_size, overlap)  # <-- BUG!
+            #          ^^^^^^^^^^^^^^^^^ 纯字符级滑动窗口
+            #          把 Step 1 的结果全扔了！
+
+        return chunks
+
+▶ 根因分析
+
+  `chunk_with_overlap()` 是纯字符级滑动窗口：
+
+    step = chunk_size - overlap  # 200 - 40 = 160
+    i = 0
+    while i < len(text):
+        chunk_text = text[i : i + chunk_size]  # 按字符位置硬切
+        i += step
+
+    text[0:200]   -> "冒泡排序的时间复杂度是"  (正好卡在句子中间)
+    text[160:360] -> "O(n^2)，空间复杂度是O(1)"  (以半截句子开头)
+
+  这完全不管自然语言边界（段落、句子、词），和 FIXED_SIZE 策略没区别。
+  更糟的是它直接 cover 了策略切分的结果，所以不管你选哪种策略，
+  只要 overlap > 0（默认 40 > 0），就一定走滑动窗口。
+
+▶ 修复方案
+
+  三处改动：
+
+  改动 1（核心）：不再用滑动窗口替换，而是在策略结果上追加 overlap
+
+    旧：if overlap > 0: chunks = chunk_with_overlap(...)  # 全扔
+    新：if overlap > 0: chunks = _add_overlap_to_chunks(chunks, text, overlap)
+
+    _add_overlap_to_chunks 做的事：
+      已经按自然边界切好的块 ->
+      每个块（从第 2 块开始）的开头追加前一块末尾的 N 个字 ->
+      保持自然边界的同时实现信息跨块冗余
+
+  改动 2：recursive_chunk 增加 merge 步骤
+
+    旧：按分隔符切完就返回，10 字的短句也独立成块
+    新：_merge_small_pieces() 把相邻小片段合并填满 chunk_size
+        例："# 标题"(5字) + "一段正文"(80字) + "另一段"(60字) -> 合并为一块 145 字
+
+  改动 3：提高默认 chunk_size
+
+    旧：200（中文约 200 个字，太短，容易破碎）
+    新：500（保持上下文完整性，同时不超过 Embedding 模型的最佳输入长度）
+
+▶ 验证测试
+
+  用一份 860 字的文档测试 (chunk_size=200, overlap=30)：
+
+    旧逻辑：切成 N 块，句中被截断
+    新逻辑：切成 5 块，长度 155/205/195/179/199
+            所有块都在 。或 \n 等自然边界结束
+            块[0] 尾 = 块[1] 头 = "list、元组 tuple..." (overlap 生效)
+            边界完整性检查：PASS
+
+▶ 这个 Bug 的教训
+
+  1. 不要相信自己调用的函数——chunk_with_overlap 名字里有 "overlap"，
+     但它做的事是 "按字符位置硬切"，和 overlap 的初衷（防止信息丢失在边界）
+     是两个完全不同的概念。名字有误导性。
+
+  2. "替换"和"追加"一字之差，效果天壤之别。
+     chunks = new_chunks  替换：把前面辛辛苦苦按自然边界切的结果全扔了
+     chunks = add_overlap(chunks)  追加：在已有结果上增强
+
+  3. 滑动窗口本身没错，但不应该取代语义切分。正确的做法是：
+     语义切分（保证句子完整）-> 在语义块之间追加重叠（保证边界信息不丢失）
+     两个操作是互补的，不应该互相替代。
+
+  4. 默认值很关键。chunk_size=200 对中文偏小（200 字只有半页纸），
+     调大可以减少碎片化、提高检索质量。
+
+
+七、实现计划
+============
+
+▶ Step 1：安装 npm 包
+
+  npm install react-markdown remark-gfm react-syntax-highlighter
+  npm install -D @types/react-syntax-highlighter
+
+  三个包的作用：
+    - react-markdown: Markdown -> React 组件
+    - remark-gfm: 支持 GitHub Flavored Markdown（表格、删除线、任务列表）
+    - react-syntax-highlighter: 给代码块加语法高亮
+
+▶ Step 2：创建 MarkdownRenderer 组件
+
+  frontend/src/components/chat/markdown-renderer.tsx
+
+  职责：
+    - 接收 Markdown 文本 -> 渲染成 React 元素
+    - 代码块用 SyntaxHighlighter 高亮
+    - 样式与 Warm Scholar 主题统一
+
+▶ Step 3：更新 ChatArea 集成 Markdown
+
+  - 没有引用的消息：直接 <MarkdownRenderer>
+  - 有引用的消息：split -> 分段渲染
+  - 保留两层引用 UI（文本内 superscript + 底部引用列表）
+
+▶ Step 4：添加代码块 CSS
+
+  在 globals.css 中添加：
+    - .code-block-header 样式
+    - pre / code 标签样式
+    - 语法高亮 token 颜色映射
+    - 滚动条细调
+
+▶ Step 5：交互细节完善
+
+  - 对话删除：后端加 API，前端加删除按钮
+  - 知识库删除：前端侧边栏加删除按钮
+
+
+八、今天的关键认知
+==================
+
+1. Markdown 是 LLM 输出的事实标准格式。因为训练数据里充斥着 Markdown，
+   LLM 自然学会了用 Markdown 组织答案结构。
+
+2. 渲染是"翻译"，不是"修图"。不是给文本加 CSS 装饰，而是解析结构、
+   转换成目标格式（HTML/React），再交给浏览器显示。
+
+3. AST 是桥梁。Markdown -> mdast（结构描述）-> hast（HTML描述）-> React。
+   每一步的 AST 都是对同一段内容的"另一种角度的描述"。
+
+4. 语法高亮 = 给 AST 的每种节点配一种颜色。代码解析成 AST 后，
+   每种 token 的类型就知道了（keyword / string / comment），
+   然后 map 到颜色。
+
+5. Markdown 和自定义组件（CitationBadge）的共存需要额外处理。
+   这是"富文本"和"交互组件"混合的经典问题——两个系统各自解析语法，
+   需要你设计好它们的边界。
+
+6. 代码块的语言标注重要。```python 和 ``` 的区别在于高亮器是否知道
+   该用什么规则。写 System Prompt 时要求 LLM 标注语言，前端就能更好地渲染。
+
+7. 不要把"滑动窗口"和"语义切分"混在一起。chunk_overlap 的意图是让相邻
+   块有信息冗余防止信息丢失，但它不该取代按句子/段落切分的基础逻辑。
+   "替换"和"追加"一字之差，效果完全不同——chunks = new_chunks vs
+   chunks = add_overlap(chunks)。
+
+8. 排查数据流 Bug 的方法是追踪每一步的数据变化。先确认输入正确，再逐层
+   打印中间结果，定位到哪一步从"正确"变成了"错误"。
+
+
+九、今日自检（逐条确认）
+==========================
+
+□ 能说出 Markdown 的 5 种以上语法（# / ** / - / ` / []() ）
+□ 能画出 react-markdown 的三步渲染流水线（mdast -> hast -> React）
+□ 理解"语法高亮"的本质——AST token 类型映射到颜色
+□ 能解释 [N] 引用和 Markdown 渲染的冲突在哪
+□ 看到带格式的 AI 回复（标题、列表、粗体），不再是纯文本
+□ 看到代码块有颜色区分（关键字、字符串、注释不同色）
+□ 引用 Badge 仍然正常工作（hover 显示原文）
+□ 能说出分块 Bug 的根因（chunk_with_overlap 替换了策略结果）
+□ 理解"语义切分 + 重叠追加"和"纯滑动窗口"的区别
+□ 知道删除旧 ChromaDB 数据后重新上传才能看到修复效果
+□ 能删除对话
+□ 能从侧边栏删除知识库
+□ 完整流程跑通：上传文件 -> 提问 -> 看到 Markdown 渲染 + 代码高亮 + 引用

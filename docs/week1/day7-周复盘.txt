@@ -1,0 +1,236 @@
+Week 1 周复盘 — LLM API 深度掌握
+=====================================
+日期：2026-06-08
+主题：从"装不上 Python"到"我能切换 5 家模型只改一个字符串"
+
+
+一、本周成果一览
+================
+
+最终交付：agent-core 包（GitHub 仓库，含 README）
+
+  仓库地址：https://github.com/Zhuyuxuan0923/agentcore
+
+  包结构：
+    src/study_agent/
+    ├── config/         配置中心（5 家 Provider 通讯录）
+    ├── llm/            LLM 调用层（统一客户端 + 重试机制）
+    └── tools/          工具抽象层（BaseTool 基类）
+
+  MyPy + Ruff 检查：零错误（仅新包代码）
+
+
+二、每日回顾
+============
+
+Day 1 — 环境搭建
+-----------------
+  学了什么：Poetry 管理依赖、Black 格式化、Ruff 检查代码风格、
+            MyPy 类型检查、Pre-commit 自动门卫
+  踩过的坑：
+    - pip install 慢 → 配了清华镜像源
+    - 第一次知道"环境变量"是什么（.env 文件 + os.getenv()）
+    - pre-commit 拦截提交 → 理解了"门卫模式"
+  关键认知：工具帮你省时间，但你要先理解它在检查什么
+
+
+Day 2 — FastAPI 速通
+---------------------
+  学了什么：FastAPI 路由、路径参数、Pydantic 类型校验、反例对比
+  踩过的坑：
+    - 请求 /bad-book/abc 时觉得应该返回"无效输入"，结果直接 500 崩溃
+      → 理解了"没做参数校验"的后果
+    - 路径参数没写类型注解（book_id vs book_id: int）→ FastAPI 不校验
+  关键认知：FastAPI 的类型系统是"自动文档 + 自动校验"，不是装饰
+
+
+Day 3 — OpenAI SDK 深度使用
+----------------------------
+  学了什么：messages 格式、system prompt 作用、temperature 调参、
+            流式输出（streaming）、多轮对话、token 计数
+  踩过的坑：
+    - 把 system prompt 和 user message 搞混 → 模型不听使唤
+    - temperature=0 和 temperature=1.5 输出差异巨大
+      → 理解"确定性"和"创造性"的权衡
+    - 流式输出用 requests 库卡住 → 知道后面要用 httpx（异步）
+  关键认知：
+    - system prompt = 给 AI 定规矩（角色、约束、输出格式）
+    - temperature 不是"准确度"，是"随机度"
+
+
+Day 4 — Anthropic SDK + 统一 LLMClient
+---------------------------------------
+  学了什么：Anthropic SDK 与 OpenAI SDK 的差异、封装统一客户端、
+            支持 5 家 Provider 一键切换
+  踩过的坑：
+    - Anthropic 的 system 是独立参数（不是 message 数组的一项）
+    - OpenAI SDK 能调 DeepSeek/GLM-4/Moonshot 因为它们兼容 OpenAI 格式
+    - 写 if-else 判断 provider → 换成配置字典 4 行解决问题
+  关键认知：
+    - 抽象层 = 把差异关在笼子里，对外暴露统一接口
+    - 加新厂商 = 在 PROVIDER_CONFIGS 加 4 行，不改业务代码
+
+
+Day 5 — 异常处理与重试机制
+---------------------------
+  学了什么：try/except 基础、tenacity 库、指数退避、Rate Limit 处理、
+            流式中断恢复、智能判断"什么错误该重试"
+  踩过的坑：
+    - 所有错误都重试 → Key 错了也重试 5 次（纯浪费）
+    - 固定等 2 秒重试 → 服务器还在过载，你又打它一下
+    - 异常捕获顺序错了 → AuthenticationError 被父类 APIError 吞掉
+  关键认知：
+    - 只重试"临时性"错误（网络抖动、限流、服务器故障）
+    - 不重试"永久性"错误（Key 错了、参数格式不对）
+    - 指数退避的本质：给服务器喘息时间
+
+
+Day 6 — 项目骨架搭建
+---------------------
+  学了什么：Python 包结构、__init__.py 导出、@dataclass、TypedDict、
+            @abstractmethod、Git/GitHub 基础操作
+  踩过的坑：
+    - 代码全堆在一起 → 按职责拆成 config/llm/tools 三个模块
+    - __init__.py 里不写 import → 从外面导入要写很长路径
+    - Git 的 user.name 没设 → commit 显示成 Claude
+    - settings.local.json 包含 API Key 差点提交 → 补了 .gitignore
+    - Windows SSL 证书问题导致 push 失败 → 切到 schannel
+  关键认知：
+    - 包结构 = 给代码加"隔层"，改一个模块不影响另一个
+    - .gitignore 是"提交黑名单"，必须在第一次 add 之前配好
+
+
+三、本周技术栈清单
+===================
+
+  已掌握的工具/库：
+    Poetry      — Python 依赖管理
+    Black       — 代码自动格式化（line-length=100）
+    Ruff        — 代码风格检查（E/F/I/N/W/UP 规则）
+    MyPy        — 类型检查（strict=true）
+    Pre-commit  — Git 提交前自动检查
+    FastAPI     — Web API 框架
+    Pydantic    — 数据校验（FastAPI 内置）
+    OpenAI SDK  — 调用 GPT-4o / DeepSeek / GLM-4 / Moonshot
+    Anthropic SDK — 调用 Claude
+    tenacity    — 重试机制库
+    Git/GitHub  — 版本控制 + 代码托管
+
+  已理解的核心概念：
+    - 类型注解（: int、-> str 不是装饰，是有实际作用的）
+    - 同步 vs 异步（async/await，先会用不深究）
+    - 流式输出 vs 非流式（打字机效果 vs 等完整回复）
+    - system prompt vs user message（规矩 vs 问题）
+    - SDK 抽象层设计（配置字典 + 统一接口）
+    - 异常层次结构（AuthenticationError ⊂ APIStatusError ⊂ APIError）
+    - 指数退避（1s → 2s → 4s → 8s...）
+    - Python 包的组织方式（__init__.py + 子模块）
+
+
+四、踩坑 TOP 10（写文章素材）
+=============================
+
+以下是在本周学习过程中遇到的最有价值的坑，每个都可以写进文章。
+
+1. API Key 硬编码在代码里
+   现象：把 sk-xxx 直接写在 .py 文件里，git push 后全世界都能看到
+   教训：用 .env 文件 + .gitignore，Key 永远不进仓库
+   延伸：settings.local.json 也要 gitignore
+
+2. 不区分"临时错误"和"永久错误"就盲目重试
+   现象：Key 错了也重试 5 次，每次都等指数递增的等待时间
+   教训：AuthenticationError(401) 和 BadRequestError(400) 重试没用，
+        只有网络错误和 RateLimit(429) 才该重试
+
+3. 固定等待时间重试导致"惊群效应"
+   现象：所有请求同时失败 → 都等 2 秒 → 同时重试 → 服务器又炸
+   教训：用指数退避 + jitter（随机偏移）分散重试时间
+
+4. Anthropic 和 OpenAI 的 system 参数位置不同
+   现象：把 system 放在 messages 数组里给 Claude → 不生效
+   教训：封装抽象层时，要在初始化阶段消化掉 SDK 差异
+
+5. 流式输出中断后从零开始而不是续传
+   现象：收到一半网络断了，重连后又从头生成 → token 浪费
+   教训：累积已收到的内容，重连时告诉 LLM "从这里继续"
+
+6. Python 包里的 __init__.py 忘了写导入
+   现象：from study_agent import LLMClient 报错找不到
+   教训：__init__.py 是"对外的窗口"，要在里面做一层 export
+
+7. Git 身份没配置导致 contributor 不是自己
+   现象：git config user.name 为空，commit 显示其他人名字
+   教训：装完 Git 第一件事：git config --global user.name + user.email
+
+8. Windows 下 SSL 证书问题导致无法 push
+   现象：Git 用 OpenSSL 找不到 Windows 证书库
+   解决：git config --global http.sslbackend schannel
+
+9. 类型注解没写导致 FastAPI 不校验
+   现象：get_book(book_id) 和 get_book(book_id: int) 行为完全不同
+   教训：FastAPI 靠类型注解做自动校验和文档生成
+
+10. Pre-commit hooks 修改了代码但没重新 add
+    现象：Hook（如 Black）自动改了格式，但你直接 commit → 格式没更新
+    教训：Hook 修改文件后要重新 git add，或者等 hook 通过后再 commit
+
+
+五、检验标准自评
+================
+
+原始要求：
+  🟡 能在 3 分钟内用自己封装的 client 切换 Anthropic → DeepSeek，不报错
+  🟡 流式输出中断后能自动重连恢复，不丢数据
+  🟡 单元测试覆盖率 > 80%
+
+自评：
+  第一条 ✅ 一行 LLMClient(provider="deepseek") 即可切换
+  第二条 ⚠️ 实现了 Stream 中断恢复方案（见 error_handling_demo.py），
+         但暂未在真实中断场景中完整验证
+  第三条 ⚠️ test_error_handling.py 只覆盖了异常处理，LLMClient 的核心
+         逻辑还没有单元测试（因为需要 mock API 调用，Week 2 补）
+
+
+六、下周预告：Week 2 — Prompt Engineering + 结构化输出
+======================================================
+
+  核心目标：
+    - 精读 Anthropic Prompt Engineering Guide
+    - 用 Jinja2 实现 Prompt 模板系统
+    - 实现 Tool Calling 循环（LLM 决定调用工具 → 执行 → 喂回结果）
+    - 本周写的 tools/base.py 会成为 Tool Calling 的地基
+
+  提前知道的事：
+    - Prompt Engineering 是手艺活，每天至少写 10 条 prompt
+    - 别追求复杂 prompt，好的 system prompt 通常 200-500 字
+    - 别忽略国产模型，面试会问"国产模型和 GPT 在 prompt 上有什么区别"
+
+
+七、文章写作指引
+================
+
+  标题建议：《LLM API 调用踩坑指南：从 API Key 泄露到流式中断恢复》
+
+  建议结构：
+    1. 导语（1 段）：用一句"我 5 天踩了 10 个坑"开头
+    2. 环境与配置坑（3 个）：Key 泄露、镜像源、环境变量
+    3. 调用方式坑（3 个）：同步 vs 流式、system prompt 位置、多轮对话
+    4. 错误处理坑（4 个）：什么该重试、指数退避、Rate Limit、流中断
+    5. 封装设计坑（2 个）：抽象层怎么设计、__init__.py 的作用
+    6. 结语（1 段）：踩坑不可怕，总结出来的坑就是经验
+
+  风格建议：
+    - 每个坑的写法："这样做 → 出什么问题 → 为什么 → 正确做法"
+    - 不要追求文采，追求"一个月后的自己能看懂"
+    - 代码片段不超过 15 行
+    - 可以吐槽，但要给出解决方案
+
+
+八、GitHub 仓库状态检查
+=======================
+
+  ✅ 仓库地址：https://github.com/Zhuyuxuan0923/agentcore
+  ✅ README 含快速开始、包结构说明、支持 Provider 列表
+  ✅ 不含个人学习文件（16周计划、CLAUDE.md 已移除）
+  ✅ .env 和 .claude/ 在 .gitignore 中
+  ✅ Contributor 显示 Zhuyuxuan0923

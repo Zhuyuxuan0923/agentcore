@@ -1,0 +1,274 @@
+Week 4 Day 2 — 后端核心搭建（PersonalQAAgent + FastAPI）
+================================================================
+日期：2026-06-21
+主题：把前三周技术栈整合成一个可工作的 Agent 后端
+前置：Week 1 LLMClient + Week 2 Prompt 模板 + Week 3 RAG 管道
+
+
+零、今天的任务
+==============
+
+Week 4 的目标是做出第一个完整的 AI Agent 项目——PersonalQA 个人知识库问答系统。
+Day 1 做了产品设计，定义了功能边界和技术选型。Day 2 要搭后端骨架。
+
+读完这篇日志后，你应能：
+  1. 画出 PersonalQA 的系统架构图（三层：API → Agent → 基础设施）
+  2. 理解"Agent"在这个项目里具体指什么（不是神秘的东西，就是 LLM + RAG + 对话管理）
+  3. 说出三层 Embedding 策略各自在什么场景下启用
+  4. 解释为什么 ChromaDB 不支持中文命名，以及如何处理
+  5. 理解 SQLite 为什么适合单用户场景（零配置、零维护）
+  6. 说出今天遇到的 3 个以上 bug 以及每个的根因和修复思路
+
+
+一、项目架构——Agent 到底长什么样
+==================================
+
+很多教程把"Agent"说得很玄乎。其实在这个项目里，Agent 就是三个东西的组合：
+
+  Agent = LLM（大脑） + RAG 管道（资料库） + 对话管理（记忆）
+
+  ┌─────────────────────────────────────────────────┐
+  │                   FastAPI 层                      │
+  │  POST /api/upload    POST /api/chat              │
+  │  GET  /api/kb         GET /api/conversations     │
+  └──────────────────────┬──────────────────────────┘
+                         │
+  ┌──────────────────────┴──────────────────────────┐
+  │               PersonalQAAgent                     │
+  │                                                   │
+  │  upload()    → 解析 → 分块 → 向量化 → 存ChromaDB  │
+  │  chat()      → 检索 → 增强Prompt → LLM生成 → 引用 │
+  │  get_history() → 从SQLite读取对话记录              │
+  └──────┬──────────────────┬────────────────────────┘
+         │                  │
+  ┌──────┴──────┐   ┌──────┴──────────┐
+  │  ChromaDB   │   │  SQLite         │
+  │  向量存储    │   │  对话历史存储    │
+  └─────────────┘   └─────────────────┘
+
+每一层只管自己的事：
+  - API 层只管接收请求、参数校验、返回 JSON
+  - Agent 层只管业务逻辑——上传怎么处理、问答怎么走
+  - 基础设施层只管存储——向量存 ChromaDB，对话存 SQLite
+
+
+二、RAG 模块重构——从 Demo 脚本到可复用模块
+==============================================
+
+Week 3 写了 4 个 Demo 脚本（900+ 行代码），但它们散落在不同文件里，不能直接复用。
+Day 2 第一件事：把 Week 3 的代码抽象成 rag/ 包。
+
+重构后结构：
+
+  src/study_agent/rag/
+  +-- __init__.py
+  +-- chunking.py      # 三种分块策略（固定/递归/语义）
+  +-- embedding.py     # 三层回退 Embedder
+  +-- retriever.py     # 向量/关键词/混合检索 + RRF 融合
+  +-- generator.py     # Prompt 渲染 + LLM 调用 + 引用解析
+  +-- pipeline.py      # 端到端 RAGResult 管道
+
+改了什么？（从"能用"到"好用"）
+
+  1. chunking.py — 保留三种策略，统一入口 chunk_document()
+     参数控制策略切换：strategy=ChunkStrategy.RECURSIVE
+     不再需要复制粘贴代码。
+
+  2. embedding.py — 三层回退（这是 Day 2 遇到的最大坑，见第五节）
+
+  3. retriever.py — 保留 VectorRetriever / KeywordRetriever / HybridRetriever
+     新增 reciprocal_rank_fusion() 函数，支持自定义权重和 k 参数。
+
+  4. generator.py — 从 Demo 里提取 RAGGenerator 类
+     parse_citations() 独立函数：正则提取 [N] → 映射 source_map
+
+  5. pipeline.py — 全新文件。把"检索→过滤→渲染→生成→引用"五步封装成 RAGResult
+     query() 一个方法搞定全链路。
+
+
+三、PersonalQAAgent——所有东西的汇合点
+=======================================
+
+▶ 生活类比：餐厅后厨
+
+  Agent 就是后厨的主厨。你（用户）下单说"一份蛋炒饭"，
+  主厨不会自己去种米、养鸡——ta 会：
+    - 从冰箱拿鸡蛋（从 ChromaDB 检索文档）
+    - 用昨天写的菜谱（Prompt 模板）
+    - 开火热锅（调 LLMClient）
+    - 出菜前撒葱花（引用解析）
+  每个步骤都有人（模块）帮 ta 做，主厨只管协调。
+
+▶ 两个核心方法
+
+  upload(file_path, kb_name)：
+    1. 读文件（.pdf/.docx/.md/.txt）
+    2. 解析成纯文本（python-docx / PyPDF2 / 直接读）
+    3. 分块（chunk_document，递归策略）
+    4. 向量化（Embedder.embed，三层回退）
+    5. 存 ChromaDB（KnowledgeBaseManager.add_documents）
+
+  chat(question)：
+    1. 问题向量化 → ChromaDB 向量检索
+    2. 关键词检索（1-gram + 2-gram 中文分词）
+    3. RRF 融合两个检索结果 → Top-K
+    4. 渲染 Jinja2 Prompt 模板（资料 + 约束 + 引用指令）
+    5. LLM 生成答案
+    6. 正则提取 [N] 引用 → 映射原文档
+    7. 保存到 SQLite 对话历史
+
+▶ KnowledgeBaseManager（多知识库管理）
+
+  ChromaDB 的 collection 概念天然适合"一个知识库 = 一个 collection"。
+  KnowledgeBaseManager 封装了增删查：
+    - get(kb_name)   → 获取或创建 collection
+    - list_kbs()      → 列出所有知识库
+    - delete(kb_name) → 删除知识库
+
+▶ ConversationManager（SQLite 对话存储）
+
+  什么是 SQLite？
+  MySQL / PostgreSQL 需要你安装一个数据库服务（常驻后台进程），
+  SQLite 就是一个文件——data/conversations.db。不需要安装任何东西，
+  Python 标准库自带 sqlite3 模块。
+
+  为什么这个项目用 SQLite？
+    - 单用户场景（你在本地用），不需要多用户并发
+    - 零配置——不用装 MySQL、不用设密码
+    - 一个文件就能备份——复制 conversations.db 就是备份
+
+  两张表：
+    conversations  → id, title, knowledge_base_name, created_at
+    messages       → id, conversation_id, turn, role, content, citations(JSON)
+
+  自动命名：创建对话时 title 默认"新对话"，用户发第一条消息后自动取前 20 字当标题。
+
+
+四、FastAPI 应用工厂
+====================
+
+▶ 三层路由
+
+  POST /api/upload          → 上传文件到知识库
+  POST /api/chat             → 向知识库提问
+  GET  /api/kb               → 列出所有知识库
+  POST /api/kb               → 创建知识库
+  DELETE /api/kb/{name}      → 删除知识库
+  GET  /api/conversations    → 对话列表
+  GET  /api/history/{id}     → 对话历史
+  POST /api/conversations/new → 新建对话
+
+▶ CORS 配置
+
+  前端跑在 localhost:3000，后端跑在 localhost:8000。
+  浏览器出于安全考虑，默认禁止跨域请求。
+  CORS 中间件告诉浏览器："我允许 localhost:3000 来访问我"。
+
+  allow_origins=["http://localhost:3000"]
+  allow_methods=["*"]
+  allow_headers=["*"]
+
+▶ 全局 Agent 单例
+
+  FastAPI 每个请求可能在不同线程处理，但 Agent 只需要初始化一次
+  （加载一次模型、打开一次数据库连接）。
+  用模块级变量 + get_agent() 函数实现懒加载单例。
+
+  什么是"懒加载"？
+  不是程序启动时就初始化 Agent，而是第一个请求来了才初始化。
+  好处：启动快、只有真需要时才占资源。
+
+
+五、今天遇到的关键 Bug 及解决
+================================
+
+▶ Bug 1：DeepSeek 不提供 Embedding API（404）
+
+  现象：调用 OpenAI Embedding API 报 404
+  根因：DeepSeek 只提供 Chat API，没有 Embedding 服务
+  影响：不能像 Week 3 那样直接用 API 做向量化
+
+  解决：实现三层回退 Embedder
+    第 1 层：OpenAI Embedding API（有 API Key 时用）
+    第 2 层：HuggingFace 本地模型（all-MiniLM-L6-v2，384 维，~80MB）
+    第 3 层：字符 n-gram 统计哈希（256 维，纯 Python 零依赖）
+    → 自动检测可用层，静默降级
+
+▶ Bug 2：HuggingFace 模型下载被墙（WinError 10054）
+
+  现象：sentence-transformers 下载模型时连接重置
+  根因：huggingface.co 在国内直连不稳定
+  解决：设置环境变量 HF_ENDPOINT=https://hf-mirror.com（国内镜像）
+
+▶ Bug 3：ChromaDB 拒绝中文 collection 名称
+
+  现象：InvalidArgumentError — collection 名称只能用 [a-zA-Z0-9._-]
+  根因：ChromaDB 底层要求名称 3-512 字符，仅允许 ASCII 字母数字
+  解决：_sanitize_name() 对中文名称做 MD5 哈希 → "kb-{hash[:8]}"，
+        原始中文名存在 collection metadata 里
+
+▶ Bug 4：RRF 阈值误杀所有检索结果
+
+  现象：无论问什么，都返回"根据现有资料无法回答"
+  根因：sim_threshold 默认 0.6 是给余弦相似度设计的（范围 0~1），
+        但 RRF 分数是排名融合后的值，通常在 0.01~0.03 之间
+        0.6 > 0.03 → 所有结果被过滤
+  解决：sim_threshold 默认改为 0.0（RRF 场景不设阈值，或设极低值）
+
+  这个 bug 的教训：
+    不同算法的分数尺度和含义完全不同，不能混用阈值。
+    余弦相似度：0.6 = 中等相关，RRF：0.03 = 排名最靠前。
+
+▶ Bug 5：向量维度不匹配（384 vs 256）
+
+  现象：ChromaDB 报 collection embedding dimension mismatch
+  根因：之前用统计哈希（256 维）存过数据，换真实模型（384 维）后维度冲突
+  解决：删除旧 ChromaDB 数据目录，重新入库
+
+▶ Bug 6：.env 中的 API Key 带了引号
+
+  现象：LLM 调用认证失败
+  根因：DEEPSEEK_API_KEY = "sk-xxx" — 引号被当成 key 的一部分
+        正确的写法：DEEPSEEK_API_KEY=sk-xxx（无空格、无引号）
+  解决：去掉引号和 = 两侧的空格
+
+  这是一个典型的环境变量配置错误。.env 文件的语法和 Python 不同：
+  Python:  x = "value"
+  .env:    x=value  （不需要引号）
+
+
+六、今天的核心认知
+==================
+
+1. Agent = 大脑(LLM) + 资料库(RAG管道) + 记忆(对话管理)。
+   不是什么神秘架构，就是把前三周的技术栈按业务逻辑串起来。
+
+2. 三层回退是一种实用主义策略。生产环境不会只有一条路——API 挂了用本地模型，
+   本地模型也没网就用统计方法。关键是让系统在各种环境下都能跑。
+
+3. 文件名/数据库名的编码限制是真实世界的问题。
+   ChromaDB 要求 ASCII 命名，中文用户想用"公司制度"当知识库名，
+   哈希映射是标准解决方案。
+
+4. 不同算法的分数尺度不一样。余弦相似度的 0.6 和 RRF 的 0.03 可能是等价的。
+   阈值得根据具体算法调整，不能直接套用。
+
+5. SQLite 是单用户应用的最佳数据库选择。零安装、零配置、文件即数据库、
+   Python 标准库自带。Week 4 这种个人 Agent 项目不需要 MySQL。
+
+6. FastAPI + CORS 是前后端分离的标准搭配。
+   API 层只做路由和校验，业务逻辑在 Agent 类里。
+
+
+七、今日自检（逐条确认）
+==========================
+
+□ 能画出 PersonalQA 的三层架构图（API → Agent → 基础设施）
+□ 能说出 Agent 的三个组成部分（LLM + RAG + 对话管理）
+□ 理解三层 Embedding 策略各自的使用场景
+□ 能解释 ChromaDB collection 命名的限制及解决方案
+□ 理解 SQLite 和 MySQL 的区别，知道为什么这个项目用 SQLite
+□ 能说出什么是"懒加载"以及 get_agent() 为什么用单例
+□ 能说出 RRF 阈值 0.6 误杀结果的根本原因
+□ 知道 .env 文件中 API Key 正确写法（无引号、无空格）
+□ 跑通了后端测试：上传文件 → 提问 → 看到带引用的答案

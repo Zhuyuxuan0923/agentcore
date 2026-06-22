@@ -134,6 +134,44 @@ def list_available_providers() -> list[str]:
 
 
 # ═══════════════════════════════════════════════════════════
+# Embedding 模型配置
+# ═══════════════════════════════════════════════════════════
+
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+
+
+@dataclass
+class AppConfig:
+    """应用级配置，打包 provider + model + embedding 等所有设置。"""
+
+    provider: str
+    model: str
+    api_key: str
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+
+    @classmethod
+    def from_env(cls) -> AppConfig:
+        provider = os.getenv("LLM_PROVIDER", "deepseek")
+        cfg = PROVIDER_CONFIGS.get(provider)
+        if cfg is None:
+            raise ValueError(f"不支持的 provider: {provider}")
+        api_key = os.getenv(cfg["env_key"], "")
+        model = DEFAULT_MODELS.get(provider, "unknown")
+        embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+        return cls(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            embedding_model=embedding_model,
+        )
+
+
+def get_config() -> AppConfig:
+    """获取全局应用配置。"""
+    return AppConfig.from_env()
+
+
+# ═══════════════════════════════════════════════════════════
 # ④ 配置数据类 —— 把散落的配置字段打包成一个对象
 # ═══════════════════════════════════════════════════════════
 #

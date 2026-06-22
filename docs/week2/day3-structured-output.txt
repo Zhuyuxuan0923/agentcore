@@ -1,0 +1,201 @@
+Week 2 Day 3 — 结构化输出（JSON Mode + Tool Calling）学习日志
+==================================================================
+日期：2026-06-11
+主题：用三种方案让 LLM 稳定输出 JSON，对比成功率
+
+
+一、问题：为什么"请输出 JSON"不可靠？
+========================================
+
+直接对 LLM 说"输出 JSON"就像对小孩说"写字整齐点"——
+有时整齐，有时不。具体来说有五种失败模式：
+
+  ① 包裹型：输出的 JSON 被 ```json ... ``` 包裹
+  ② 话痨型：JSON 前面加了"好的，以下是为您提取的..."
+  ③ 漏字段型：JSON 合法，但漏了几个关键字段
+  ④ 发明型：自己加了 Schema 里没定义的字段
+  ⑤ 胡编型：JSON 里面有语法错误（少逗号、引号不配对）
+
+这些不是 LLM "笨"，而是它的本质决定的：
+  LLM 是"逐 token 生成器"，每次生成下一个最可能的 token。
+  它不是"先想好 JSON 结构再填空"，而是边想边写。
+  所以偶尔写出非法 JSON 是数学上必然的。
+
+
+二、三种解决方案的原理
+============================
+
+┌──────────────────┬──────────────────────────────┬─────────────────────┐
+│ 方案                │ 原理                         │ 类比                │
+├──────────────────┼──────────────────────────────┼─────────────────────┤
+│ JSON Mode  │ API 参数保证"只生成合法       │ 写字时用田字格本—— │
+│                         │ JSON 的 token"               │ 每个字必须落在格里  │
+├──────────────────┼──────────────────────────────┼─────────────────────┤
+│ Tool Use        │ 把输出格式伪装成"工具参数"    │ 填表而不是自由写作——│
+│ (Claude)         │ Claude 必须填工具的参数      │ 表头定了，不乱写    │
+├──────────────────┼──────────────────────────────┼─────────────────────┤
+│ Function Call │ 让 LLM "调用函数"，参数即数据 │ 同上，但用 OpenAI 的 │
+│ (OpenAI生态) │ tool_choice 强制必须调用       │ "函数调用"机制      │
+└──────────────────┴──────────────────────────────┴─────────────────────┘共同思路：
+  不给 LLM "可以自由发挥"的空间——用 API 参数锁死输出格式。
+
+  对比人类：让人"随便写" → 格式五花八门
+           给人一张表让他填 → 格式统一
+           表就是 Schema，Tool Use 就是"我只能填表"
+
+
+三、JSON Mode 深入
+==================
+
+OpenAI 的 response_format 参数：
+
+  response_format={"type": "json_object"}
+  → 模型在每一步生成 token 时，只考虑能构成合法 JSON 的 token
+  → 数学上保证输出是合法 JSON
+
+但 JSON Mode 有两个限制：
+  1. 只保证"是 JSON"，不保证"包含你想要的字段"
+     → 所以 system prompt 里还得描述 Schema（双重保险）
+
+  2. 只支持 OpenAI 和部分兼容厂商
+     → Anthropic Claude 没有这个参数
+
+  3. 必须在 system prompt 或 user message 里出现 "JSON" 这个词
+     → OpenAI 的硬性要求，否则会报错
+
+
+四、Tool Use 深入（Claude 的方案）
+==================================
+
+Claude 没有 JSON Mode，但它有 Tool Use 机制。
+
+Tool Use 原本的用途：让 Claude 调用外部工具（搜索、读文件、发邮件）
+  - 你定义一个工具的名字、描述、参数 Schema
+  - Claude 决定"我需要用这个工具"，然后生成 tool_use 块
+  - 你的代码执行工具，把结果喂回去
+
+但这里我们"骗"了 Claude：
+  1. 定义一个工具，它的参数 Schema = 我们想要的输出格式
+  2. 用 tool_choice={"type": "tool", "name": "extract_xxx"} 强制调用
+  3. Claude 把结构化数据写入 tool_use.input
+  4. 我们不执行工具，直接拿 input 里的数据
+
+这就是"曲线救国"——用工具的 Schema 约束来保证结构化输出。
+
+
+五、Function Call 深入（GLM-4 / DeepSeek 的方案）
+==================================================
+
+和 Tool Use 一样的思想，但用的 OpenAI 的函数调用 API。
+
+关键参数：
+  tools=[{...}]  → 定义"函数"（实际是输出 Schema）
+  tool_choice={"type": "function", "function": {"name": "extract_xxx"}}
+  → 强制 LLM 必须调用这个函数
+
+和 JSON Mode 的区别：
+  - JSON Mode：       "我要输出 JSON"
+  - Function Call：   "我要调用函数，参数是 JSON"
+  结果都是 JSON，但 Function Call 因为工具定义的 Schema 是强制约束，
+  字段更不容易漏。
+
+哪个成功率更高？
+  → 通常 Function Call > JSON Mode > 纯 Prompt
+  → 原因：Function Call 的 Schema 是"填表"，JSON Mode 只是"写字用田字格"
+
+
+六、今天建的代码模块
+====================
+
+文件结构：
+  src/study_agent/llm/
+  ├── structured.py        ← NEW：结构化输出提取器
+  │   ├── ExtractionSchema       数据类：定义提取 Schema
+  │   └── StructuredExtractor    核心类：三种策略的统一入口
+  └── __init__.py          已更新：导出新类
+
+  src/study_agent/
+  └── w2d3_demo.py          ← NEW：三种方案对比演示
+
+核心类的职责：
+
+  ExtractionSchema（你要什么）
+    - name/description/properties/required 四个字段定义提取任务
+    - to_json_schema()        → 转成标准 JSON Schema
+    - to_openai_tool()        → 转成 OpenAI Function Calling 格式
+    - to_anthropic_tool()     → 转成 Anthropic Tool Use 格式
+    - to_system_prompt_fragment() → 生成 prompt 里的 Schema 描述
+
+  StructuredExtractor（怎么提取）
+    - extract(text, schema, method) → 统一入口
+    - _extract_via_prompt_only()    → 基线：仅 prompt
+    - _extract_via_json_mode()      → OpenAI JSON Mode
+    - _extract_via_tool_use()       → Claude Tool Use
+    - _extract_via_function_call()  → OpenAI Function Call
+    - available_methods()           → 查当前 provider 支持哪些方法
+
+设计原则：
+  1. 三种方案用同一个 extract() 入口 → 切换方案只改一个 method 参数
+  2. ExtractionSchema 独立于 extractor → 同一个 Schema 可以被多种方案复用
+  3. _parse_json_response() 独立函数 → 五行抢救策略复用
+
+
+七、_parse_json_response() 的五行抢救策略
+=========================================
+
+当 LLM 的输出不完全是 JSON 时（尤其是 prompt_only 方案），
+用层层递进的策略"抢救"：
+
+  策略 1：直接 json.loads(整个字符串) → 最理想
+  策略 2：正则匹配 ```json ... ``` → LLM 常犯的"包裹"错误
+  策略 3：正则匹配 ``` ... ``` → 没写 json 但有代码块
+  策略 4：找第一个 { 和最后一个 } → 前面有废话，后面有"希望对你有帮助"
+  策略 5：全失败 → 返回 None，承认失败
+
+  这个函数本身就是"为什么需要结构化输出"的证明——
+  如果没有 JSON Mode 或 Tool Use，你得写这么多抢救代码。
+
+
+八、演示脚本怎么跑
+==================
+
+  # 用默认 provider（从 LLM_PROVIDER 环境变量读）
+  python src/study_agent/w2d3_demo.py
+
+  # 指定只测某一个方案
+  python src/study_agent/w2d3_demo.py --method json_mode
+  python src/study_agent/w2d3_demo.py --method tool_use
+  python src/study_agent/w2d3_demo.py --method function_call
+  python src/study_agent/w2d3_demo.py --method prompt_only
+
+  # 切换 provider（通过环境变量）
+  $env:LLM_PROVIDER="deepseek"
+  python src/study_agent/w2d3_demo.py
+
+演示流程：
+  1. 加载 10 条产品描述文本
+  2. 对每条文本、每个可用的方案执行提取
+  3. 检查结果：JSON 合法？必填字段全？类型对？
+  4. 输出对比表格
+
+
+九、核心收获
+============
+
+  1. 纯 Prompt 要求 JSON → 不可靠，5 种失败模式
+  2. JSON Mode → API 层保证合法 JSON，但不保证字段齐全
+  3. Tool Use → 把输出 Schema 伪装成工具参数（Claude 的方案）
+  4. Function Call → 同 Tool Use 思路，OpenAI 生态（GLM-4/DeepSeek）
+  5. 3 种方案共用一个 ExtractionSchema → 改 Schema 不需要改提取代码
+  6. 结构化输出的本质 → 不给 LLM 自由发挥的空间
+
+
+十、明日预告：Day 4 — Tool Use 深入（完整 tool calling 循环）
+============================================================
+
+今天做的是"用工具定义来约束输出"（单向）。
+明天做"LLM 决定调用哪个工具 → 执行 → 结果喂回 → 继续决策"（循环）。
+最多循环 5 轮。
+
+今天的 StructuredExtractor 会直接用于明天的循环——
+LLM 返回 tool_use → 我们 execute → 把结果包成 message → 再发给 LLM。

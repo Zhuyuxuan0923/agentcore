@@ -1,0 +1,385 @@
+Week 3 周复盘 — RAG 检索增强生成全链路打通
+====================================================
+日期：2026-06-21
+主题：从"LLM 凭记忆回答"到"LLM 查资料回答"——RAG 完整管道 + 评测体系
+
+
+一、本周成果一览
+================
+
+最终交付：RAG 全链路管道 + 评测体系（chromadb_demo + chunking + retrieval + generation + evaluation）
+
+  新增/更新模块：
+    src/study_agent/prompt/templates/
+    └── rag_generation.j2              ← RAG 生成专用模板（Day 5）
+
+  演示脚本：
+    src/study_agent/chromadb_demo.py         Day 2：ChromaDB 基础操作
+    src/study_agent/chromadb_openai_demo.py  Day 2：OpenAI Embedding 版
+    src/study_agent/chromadb_vs_bruteforce.py Day 2：向量检索 vs 暴力检索
+    src/study_agent/w3d3_chunking_demo.py    Day 3：3 种分块策略对比
+    src/study_agent/w3d4_retrieval_demo.py   Day 4：3 种检索策略 + RRF 融合
+    src/study_agent/w3d5_generation_demo.py  Day 5：生成与引用（全链路）
+    src/study_agent/w3d6_evaluation.py       Day 6：评测框架（30题x4指标x5配置）
+
+  LLM 内部原理系列（穿插在本周）：
+    docs/llm-internals/                     Day 1-3：Tokenizer / Transformer / 训练流水线
+
+  学习日志：
+    docs/week3/day1-rag-theory.txt          Day 1：RAG 五概念 + 全链路流程图
+    docs/week3/day2-chromadb.txt            Day 2：向量数据库搭建
+    docs/week3/day3-chunking.txt            Day 3：文档分块与索引流水线
+    docs/week3/day4-retrieval.txt           Day 4：检索策略实战
+    docs/week3/day5-generation.txt          Day 5：生成与引用
+    docs/week3/day6-evaluation.txt          Day 6：RAG 评测与优化
+    docs/week3/rag-pipeline.html            Day 1：RAG 全链路流程图（可交互）
+
+  本周文章：
+    docs/week3/rag-pitfalls-article.txt     《RAG 系统踩坑实录：从 Chunking 到引用追溯》
+
+
+二、每日回顾
+============
+
+Day 1 — RAG 理论学习
+-----------------------
+  学了什么：精读 LlamaIndex Concepts，理解 RAG 五大核心概念
+  关键认知：
+    - Embedding = 把文字变成一串数字（向量），语义相近的文字向量也相近
+    - Node = 文档切分后的最小单位，是检索的"颗粒"
+    - Index = 向量数据库的"目录"，知道每个 Node 的向量存在哪
+    - Retriever = 根据问题向量去 Index 里找最相似的 Node
+    - QueryEngine = 把 Retriever + LLM 打包成一个"问就答"的接口
+  五大概念的关系（从下到上）：
+    Documents -> Nodes -> Embedding -> Index -> Retriever -> QueryEngine
+  画了 RAG 全链路流程图（rag-pipeline.html），可交互查看每个环节
+
+
+Day 2 — ChromaDB 向量数据库搭建
+---------------------------------
+  学了什么：用 ChromaDB 存储文档 + 向量检索，理解向量相似度计算
+  关键认知：
+    - 向量数据库 = 专门存"向量"的数据库，核心操作是"找最近的向量"
+    - 距离度量：cosine（方向相似度）、L2（欧氏距离）、dot product（内积）
+    - ChromaDB 的 EmbeddingFunction = 自动把文字向量化的钩子
+    - EphemeralClient = 临时数据库（关了就没），PersistentClient = 持久化到磁盘
+    - 向量检索 O(log n) vs 暴力检索 O(n)——大数据量下向量检索快几个数量级
+  演示：
+    - chromadb_demo.py：基础 CRUD + 相似度查询
+    - chromadb_vs_bruteforce.py：向量检索 vs 暴力检索的性能对比
+    - chromadb_openai_demo.py：用 OpenAI text-embedding-3-small 做真实向量化
+
+
+Day 3 — 文档分块与索引流水线
+-------------------------------
+  学了什么：3 种分块策略的实现与对比
+  关键认知：
+    - 分块（Chunking）= 把长文档切成小块——太大塞不进上下文，太小缺语境
+    - 三种策略：
+      * 固定大小分块（Fixed-size）：最简单，速度快，但可能在句子中间截断
+      * 递归字符分块（Recursive）：按分隔符优先级逐级切分，尽量保持段落/句子完整
+      * 语义分块（Semantic）：按文本向量相似度找"话题断点"，语义最连贯但最慢
+    - chunk_size 的黄金法则：太小丢失上下文（一条信息拆两半），太大塞不进 LLM 窗口
+    - chunk_overlap = 相邻块之间的重叠——防止关键信息刚好落在分块边界上
+    - 分块策略直接决定检索质量——这是 RAG 系统最容易忽视的"地基"环节
+  演示：w3d3_chunking_demo.py — 3 种策略拆分同一篇文档，对比结果
+
+
+Day 4 — 检索策略实战
+-----------------------
+  学了什么：3 种检索策略 + RRF 融合排序
+  关键认知：
+    - 向量检索：语义相似，能找到"意思相同但用词不同"的文档（如"工资"找到"薪酬"）
+    - 关键词检索（BM25）：精确匹配，擅长找"专用术语"（如"Wi-Fi 密码"精确命中）
+    - 混合检索 = 向量 + 关键词 → RRF 融合 → 兼顾语义和精确
+    - RRF（倒数排名融合）= 把两个排名的"倒数"加起来重排——简单但有效
+    - 不同场景选不同策略：技术文档偏重关键词，FAQ 偏重语义，通用场景用混合
+  演示：w3d4_retrieval_demo.py — 3 种策略 + RRF，对比 3 个场景的召回效果
+
+
+Day 5 — 生成与引用（Generation & Citation）
+----------------------------------------------
+  学了什么：RAG 链路的最后一步——检索结果 -> Prompt -> LLM 生成 -> 引用解析
+  关键认知：
+    - RAG 不是"把检索结果丢给 LLM 就完了"——还有增强和引用两步
+    - 纯 LLM 回答内部问题 = 幻觉（编造听起来合理但错误的信息）
+    - RAG 回答 = 先查资料再回答——但如果没有引用，用户没法验证
+    - 引用标注 [1] [2] = 连接"答案"和"来源"的桥梁
+    - Prompt 模板是"软约束"——不是代码强制，但设计良好的模板让 LLM 大概率遵守
+    - 引用解析 = 正则提取 [N] -> 映射原文 -> 用户可点击追溯
+  边界情况：
+    - 资料里没有答案 -> 相似度阈值过滤 + Prompt 兜底指令"无法回答时直说"
+    - 多条资料信息冲突 -> LLM 应同时引用并说明差异（高级 RAG 内容，Week 7-8）
+  演示：w3d5_generation_demo.py — 6 个 Part，从"纯 LLM 幻觉"到"端到端 RAG 管道"
+
+
+Day 6 — RAG 评测与优化
+-------------------------
+  学了什么：用数据回答"RAG 管道做得到底怎么样"
+  关键认知：
+    - 评测是把"感觉差不多"变成"精确到百分比的数字"
+    - RAG 评测分四层：检索 -> 生成 -> 引用 -> 边界，每层独立打分
+    - 检索召回率是第一优先级：正确答案文档没搜到，后面全白费
+    - Top-K 和相似度阈值的 trade-off：宽松 = 高召回高噪音，严格 = 高精度可能漏答
+    - Ground Truth 是评测的前提——没有标准答案就无从对比
+    - 引用正确性 = RAG 的良心——标注的来源必须是真实且正确的
+  指标：
+    1. 检索召回率 (Recall@K)  = 正确答案文档有没有被搜到？
+    2. 答案准确性 (Keyword Hit) = 关键事实有没有出现在回答里？
+    3. 引用正确性 (Citation Prec.) = LLM 标的 [1][2] 是不是真对应了正确文档？
+    4. 拒答正确率 (Rejection Rate) = 知识库没有答案时，有没有诚实说不知道？
+  演示：w3d6_evaluation.py — 30 题 x 4 指标 x 5 种配置对比
+
+
+[附] LLM 内部原理系列（3 天）
+==============================
+
+穿插在 Week 3 的 3 天理论课，做 RAG 之前先理解 LLM 内部怎么运作：
+
+Day 1 — Tokenization（分词原理）
+  - BPE（字节对编码）：从字符开始，逐步合并高频字符对，形成词汇表
+  - token 影响一切：成本按 token 计费、上下文窗口有 token 上限、截断也按 token
+  - 中文 tokenization 比英文"费 token"：一个汉字约 1.5-2 个 token，一个英文单词约 1-1.3 个
+  - 不同模型用不同的 tokenizer，同一个句子在不同模型下 token 数可能不同
+
+Day 2 — Transformer + Attention
+  - Self-Attention：每个词看整句话的所有词，计算"这个词和其他词多相关"
+  - Multi-Head Attention：多组"注意力眼镜"并行，从不同角度理解关系
+  - 上下文窗口的平方成本：窗口翻一倍，计算量翻四倍
+  - Lost in the Middle：长上下文中间的信息容易被忽略——检索到的文档要放在 prompt 的开头或结尾
+
+Day 3 — 训练流水线（Pretrain -> SFT -> RLHF）
+  - Pretrain：在海量互联网文本上"填词"训练，学语言的统计规律
+  - SFT（监督微调）：用人工标注的"好回答"教模型怎么对话
+  - RLHF（人类反馈强化学习）：人类对多个回答排序，模型学习"更好的回答长什么样"
+  - 幻觉的根源：LLM 学的是"说什么更可能"，不是"说什么是真的"
+  - RAG vs Fine-tuning：RAG 是"给模型查资料"，Fine-tuning 是"让模型背资料"
+
+
+三、本周技术栈清单
+==================
+
+  已掌握的工具/库：
+    ChromaDB            — 开源向量数据库（EphemeralClient / PersistentClient）
+    LlamaIndex Concepts — RAG 框架的五大抽象概念
+    Jinja2              — Prompt 模板引擎（rag_generation.j2 模板）
+    langchain_text_splitters — 文档分块工具包（3 种策略）
+    sklearn.feature_extraction.text — TfidfVectorizer（关键词检索）
+    Cohere API          — 付费 Re-ranking 服务（Day 4 提过，未深入）
+
+  已理解的核心概念：
+    - RAG = 检索(Retrieve) + 增强(Augment) + 生成(Generate)，给 LLM 装"资料库"
+    - Embedding = 文字到向量的映射，向量距离 = 语义相似度
+    - 向量数据库 = 专门做"找最近向量"的数据库，O(log n) 比 O(n) 快几个数量级
+    - 分块策略 = RAG 的"地基"——切多大、怎么切直接影响检索质量
+    - chunk_overlap = 块间重叠，防止关键信息落在分块边界
+    - 向量检索 vs 关键词检索：语义相似 vs 精确匹配，各有所长
+    - RRF（倒数排名融合）= 两个排名融合的简单而有效的算法
+    - 幻觉（Hallucination）= LLM 编造听起来合理但错误的信息
+    - 引用标注 [1] [2] = 让答案可追溯、可验证的机制
+    - Prompt 软约束 = 不是代码强制，但设计良好的 prompt 让 LLM 大概率遵守
+    - RAG 评测四层指标：检索 -> 生成 -> 引用 -> 边界
+    - Ground Truth = 人工标注的"标准答案"，评测的基准
+    - Top-K / 相似度阈值 trade-off：宽松 vs 严格的选择取决于场景
+    - Tokenization / BPE / 上下文窗口平方成本 / Lost in the Middle
+    - 训练三阶段：Pretrain -> SFT -> RLHF / 幻觉根源
+
+
+四、踩坑 TOP 10（文章素材）
+=============================
+
+1. Chunking 的 "chunk_overlap" 设太小 -> 关键信息被截断在两块之间
+   现象：制度文档中"年假政策"一段正好卡在两个 chunk 交界处，
+        前半句在 chunk 2，后半句在 chunk 3，结果检索时两个 chunk 相似度都不够高
+   教训：overlap 至少是 chunk_size 的 10-20%。如果 chunk_size=512，overlap >= 50
+   延伸：不要假设关键信息一定完整落在某个块里，overlap 是保险
+
+2. 向量检索搜不到专有名词 -> 关键词检索救场
+   现象：用户问"Study@2026 是什么？"（Wi-Fi 密码），向量检索返回的全是报销文档
+        因为"Study@2026"在向量空间里没有相近的语义邻居，但关键词匹配能精确命中
+   教训：不要只用向量检索或只用关键词——混合检索才是生产环境的标配
+   延伸：RRF 融合让两者互补而不是互斥
+
+3. RAG 生成时没在 prompt 里要求引用 -> 答案对但没法验证
+   现象：LLM 回答"一线城市住宿 500 元/晚"——答案是准确的，但用户不知道
+        这是真的还是 LLM 编的？没有引用编号，用户只能选择全信或全不信
+   教训：RAG 不能只把资料喂进去——还要用 prompt 指令明确要求标注引用编号
+   延伸：引用是 RAG 的"良心"，有引用才有可追溯性
+
+4. Prompt 忘了写"无法回答时直说" -> LLM 编造答案
+   现象：用户问"公司附近有什么好吃的？"知识库里只有制度文档。
+        LLM 说"公司食堂在 3 楼提供..."——完全编造的幻觉
+   教训：RAG prompt 模板必须有兜底规则："参考资料中没有相关信息时，直说，不要编造"
+   延伸：代码层面也要用相似度阈值过滤——检索结果的最高 sim < 0.5，直接拒答
+
+5. 超出范围的查询没做相似度过滤 -> 不相干的文档混入 prompt
+   现象：用户问"今天天气怎么样"，检索到报销/IT 文档（sim 值都很低，但没过滤），
+        LLM 看到这些文档，回答"根据公司规定..."——完全答非所问
+   教训：检索结果必须经过相似度阈值过滤。sim < 阈值 -> 丢弃，不给 LLM 看
+   延伸：0.6 是一个常见起点，根据场景调高（精度优先）或调低（覆盖优先）
+
+6. 检索返回的文档顺序全按相似度排列 -> LLM 忽略排在后面的重要信息
+   现象：LLM 对长上下文有"Lost in the Middle"效应——排在中间的文档容易被忽略
+        相似度最高的文档放在最前面，第二高的放第二位...倒数第二高的可能包含了关键信息
+   教训：重要文档不要放在中间位置。要么放在开头，要么放在结尾
+   延伸：生产环境可以只取 Top-3、Top-5，避免 LLM 注意力分散
+
+7. 把"模拟向量"和"真实 Embedding API"混为一谈 -> 检索效果差距巨大
+   现象：Demo 里用 8 维手写模拟向量跑出了不错的效果，以为"向量检索就这么简单"
+        真实场景用 OpenAI Embedding 时，1536 维的向量空间远比 8 维复杂
+   教训：Demo 的模拟向量只是"理解概念"用的，生产环境必须用真实的 Embedding 模型
+   延伸：text-embedding-3-small（OpenAI）和 bge-large（开源）都是不错的选择
+
+8. 引用解析只处理了 [N] 格式 -> LLM 用了其他引用格式
+   现象：LLM 输出了 "根据第一份资料..." 或 "参见资料1"——没有用 [1] 格式
+        正则 r"\[(\d+)\]" 提取不到任何引用
+   教训：引用格式要在 prompt 里明确指定——"引用时请使用 [1] [2] 等编号"
+        同时代码层面做好兜底：如果提取不到 [N]，尝试其他格式
+   延伸：生产环境可以用 [N](链接) 格式，让引用可以直接点击跳转
+
+9. ChromaDB EphemeralClient 每次重启都会丢失数据 -> 开发调试时很烦
+   现象：每次跑 Demo 后 ChromaDB 数据丢失，要重新索引
+   教训：PersistentClient 持久化数据到磁盘，重启不丢失
+        开发阶段可以先用 Ephemeral（快），确定方案后用 Persistent（稳）
+   延伸：ChromaDB 是学习工具，生产环境用 Milvus/Qdrant/Weaviate
+
+10. 评测时用关键词命中率 -> 同义词替换被判为"错误"
+    现象：LLM 回答"首都"代替"北京"，关键词命中率判 0%，但答案其实是对的
+    教训：关键词匹配是最简单但最粗糙的评测方案，同义词会误判
+    正确做法（分阶段）：学习阶段用关键词理解评测逻辑 ->
+                       Week 10 进阶到 LLM-as-Judge（让 GPT-4 给另一个 LLM 打分）
+
+
+五、检验标准自评
+================
+
+Week 2 周复盘里写的 Week 3 目标：
+  核心目标：
+    - 理解 RAG（检索增强生成）的原理和工程实现               [x]
+    - 搭建向量数据库（ChromaDB）                             [x]
+    - 实现文档分块（Chunking）策略                           [x]
+    - 实现 Embedding + 检索 + 生成 完整流水线                 [x]
+    - 用评测框架验证检索质量                                  [x]
+
+  自评：
+    第一条 [x] Day 1 理解了五大概念，画了全链路流程图
+    第二条 [x] Day 2 ChromaDB 搭建 + CRUD + 向量 vs 暴力对比
+    第三条 [x] Day 3 3 种分块策略实现 + 对比分析
+    第四条 [x] Day 5 端到端 rag_pipeline() 一个函数搞定全流程
+    第五条 [x] Day 6 30 题 x 4 指标评测框架
+
+  额外完成（超出 Week 2 预告的）：
+    - LLM 内部原理 3 天（Tokenizer / Transformer / 训练流水线）       [x]
+    - 3 种检索策略 + RRF 融合                                       [x]
+    - 生成与引用（Citation）完整实现                                  [x]
+    - 引用解析（正则提取 [N] -> 映射原文档）                          [x]
+    - 边界情况处理（知识库无答案时的拒答策略）                        [x]
+    - 多配置对比评测（5 种 Top-K x sim_threshold 组合）             [x]
+
+  未完成/待改进：
+    - 模拟向量的局限性：Demo 用 8 维手写向量，不是真正的语义搜索       ⚠️
+    - Cohere Re-ranking 只提了概念，没实际调用                       ⚠️
+    - 没有用真实 PDF 文件测试端到端管道                              ⚠️
+    - 测试用例的 Ground Truth 是手工标注，没有覆盖更多边界            ⚠️
+
+
+六、Week 1 vs Week 2 vs Week 3 进步对比
+========================================
+
+  ┌──────────┬─────────────────┬──────────────────┬──────────────────┐
+  │ 维度     │ Week 1           │ Week 2             │ Week 3             │
+  ├──────────┼─────────────────┼──────────────────┼──────────────────┤
+  │ 核心技能 │ 会调 LLM API      │ 会设计 prompt     │ 会让 LLM 查资料回答 │
+  │ 代码组织 │ 3 个模块          │ 6 个模块 + 模板    │ + RAG 全链路管道    │
+  │ 设计思考 │ "怎么能跑通"      │ "怎么跑得好"       │ "怎么验证跑得好"    │
+  │ 质量保证 │ MyPy + Ruff       │ + 评测框架         │ + 分层指标 + 配置对比│
+  │ 安全意识 │ API Key 不进仓库  │ + ast.parse 白名单 │ + 引用可追溯        │
+  │ 核心认知 │ LLM 是 API        │ LLM 是概率系统     │ LLM 需要"查资料"    │
+  │ 产出规模 │ 3 个 demo 脚本    │ 6 个 demo 脚本     │ 7 个 demo 脚本      │
+  └──────────┴─────────────────┴──────────────────┴──────────────────┘
+
+  Week 1: "怎么和 LLM 说话"（会调 API）
+  Week 2: "怎么好好和 LLM 说话"（会设计 prompt）
+  Week 3: "怎么让 LLM 说真话"（RAG 检索增强 + 评测验证）
+
+
+七、下周预告：Week 4 — 第一个 AI Agent 项目
+==============================================
+
+  核心目标：
+    - 用前三周的全部技能搭建第一个完整的 AI Agent 项目
+    - 整合：LLMClient + Prompt 模板 + Tool Calling + RAG 全链路
+    - 这是一个可以放进简历的完整作品
+
+  提前知道的事：
+    - Agent = LLM + 工具 + 记忆 + 规划——不只是"问答"，而是"能干活"
+    - 你的第一个 Agent 会结合 RAG（查资料）+ Tool Calling（执行操作）
+    - 项目结构会比前几周更接近"真正的软件工程"
+    - Week 4 结束后你会有一个可以部署和演示的完整项目
+
+  前三周的技术栈会在 Week 4 全部用上：
+    Week 1 的 LLMClient -> 调用 LLM
+    Week 2 的 Tool Calling -> Agent 执行操作
+    Week 2 的 Prompt 模板 -> Agent 的 system prompt
+    Week 3 的 RAG 管道 -> Agent 的知识库
+    Week 3 的评测框架 -> 验证 Agent 效果
+
+
+八、GitHub 仓库状态
+===================
+
+  [x] 仓库地址：https://github.com/Zhuyuxuan0923/agentcore
+  [x] agent-core 包（config / llm / tools / prompt）代码已推送
+  [ ] Week 3 新增演示脚本（w3d*_demo.py）待提交
+  [ ] Week 3 学习日志目录 docs/week3/ 通常不进仓库（个人学习内容）
+
+
+九、本周文章写作指引
+====================
+
+  标题建议：《RAG 系统踩坑实录：从 Chunking 到引用追溯》
+
+  建议结构：
+    1. 导语（1 段）：
+       用 RAG 最经典的问题开头——"LLM 不知道你公司的 Wi-Fi 密码"
+       RAG 就是给 LLM 装一个"公司知识库"，让它从凭记忆回答变成查资料回答
+       但搭 RAG 的坑比想象的多得多
+    2. 分块陷阱（3 个坑）：
+       chunk_overlap 太小、chunk_size 一刀切、没用递归分块导致句子截断
+    3. 检索陷阱（3 个坑）：
+       只用向量忘了关键词、没做 RRF 融合、相似度阈值设太高/太低
+    4. 生成陷阱（2 个坑）：
+       忘了要求引用标注、没写"无法回答时直说"的兜底规则
+    5. 评测陷阱（2 个坑）：
+       只看总体不看细节、用关键词做评测时被同义词骗
+    6. 结语（1 段）：
+       RAG 不是"检索 + LLM"那么简单——分块、检索、生成、引用、评测五关，
+       每一关都有坑。但踩完这些坑，你就知道怎么搭一个"能进生产环境"的 RAG 了。
+
+  风格建议：
+    - 用"公司 Wi-Fi 密码是什么？"作为贯穿全文的例子
+    - 每个坑给一个"错误做法"和"正确做法"的对比（不超过 8 行）
+    - 用 ASCII 图展示 RAG 全链路，标注每关常见的坑在哪
+    - 语气：不是"你应该这样做"，而是"我踩过这个坑，建议你这样绕开"
+
+
+十、本周自我总结
+================
+
+  [最大收获]
+    理解了 RAG 不是"把文档丢进向量库就完了"——它是一条从"理解概念"到
+    "分块 -> 向量化 -> 检索 -> 增强 -> 生成 -> 引用 -> 评测"的完整链路。
+    每个环节都有 trade-off，每个环节出问题都会影响最终答案。
+
+  [最意外发现]
+    Lost in the Middle —— LLM 对长上下文中段的内容注意力最低。
+    把最重要的文档放在 Prompt 的开头或结尾，而不是按相似度从高到低排列。
+
+  [最实用的技能]
+    端到端 rag_pipeline() —— 一个函数封装了检索 -> 增强 -> 生成 -> 引用四步。
+    Week 4 做 Agent 项目时可以直接复用这个函数。
+
+  [下一步打算]
+    Week 4 把 RAG 管道 + Tool Calling + Prompt 模板整合成第一个 AI Agent。
+    这个 Agent 不只是"回答问题"，而是"能执行任务"——比如"帮我查一下年假政策，
+    然后发一封请假邮件给直属上级"。

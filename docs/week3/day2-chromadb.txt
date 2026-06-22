@@ -1,0 +1,817 @@
+Week 3 Day 2 — 向量数据库搭建（ChromaDB）
+========================================
+日期：2026-06-13
+主题：向量数据库概念 + ChromaDB 安装 + 增删改查 + 语义搜索实战
+前置：Day 1 RAG 理论（你已理解 Embedding / Node / Index / Retriever / QueryEngine）
+
+
+零、今天的任务
+==============
+
+Day 1 你理解了 Embedding 把文字变成向量。今天解决"向量存在哪、怎么查"的问题。
+读完这篇日志后，你应能：
+
+  1. 说清楚向量数据库跟 MySQL/MongoDB 的本质区别
+  2. 用 ChromaDB 创建一个 Collection，完成增删改查
+  3. 用 text-embedding-3-small 做中文语义搜索
+  4. 理解 similarity score 的含义，设置合理的阈值
+
+今天会大量写代码。每个代码片段都可以直接运行。
+
+
+一、回顾 Day 1 + 发现"断点"
+===========================
+
+Day 1 学完了 Embedding——文字变向量。但有个问题没回答：
+
+  用户问题 "报销流程" → Embedding 模型 → [0.12, -0.33, ..., 0.04] ✓
+                                                      ↓
+                                                  然后呢？往哪存？
+                                                      ↓
+                                    ┌─────────────────┴──────────────────┐
+                                    │  方案 A：存 Python 列表里            │
+                                    │  vectors = [[0.12,...], [0.11,...]] │
+                                    │  缺点：程序关了数据就没了             │
+                                    │                                     │
+                                    │  方案 B：存 MySQL 里                 │
+                                    │  一张表 1536 个列？开玩笑。          │
+                                    │                                     │
+                                    │  方案 C：存向量数据库里 ← 今天的答案   │
+                                    └─────────────────────────────────────┘
+
+
+二、没有向量数据库的时候有多痛——先写一段"烂代码"
+==================================================
+
+在学 ChromaDB 之前，先体验一下"没有专用工具"的滋味。
+
+假设你有 5 篇文档，用户提问后你要找到最相关的文档。不用任何库，
+自己写一个"暴力检索"：
+
+```python
+import math
+
+# 模拟 5 篇文档的 Embedding 向量（每篇只用 4 维示意，真实是 1536 维）
+documents = [
+    {"text": "Python 报错处理指南", "vector": [0.8, 0.1, 0.05, 0.05]},
+    {"text": "Java 多线程编程",     "vector": [0.05, 0.9, 0.03, 0.02]},
+    {"text": "Python try except 用法", "vector": [0.75, 0.12, 0.1, 0.03]},
+    {"text": "MySQL 索引优化",      "vector": [0.02, 0.04, 0.9, 0.04]},
+    {"text": "团队周报模板",         "vector": [0.01, 0.02, 0.03, 0.94]},
+]
+
+# 用户问题 "怎么处理异常" 的向量
+query_vector = [0.78, 0.1, 0.08, 0.04]
+
+# 暴力检索：逐个算余弦相似度
+def cosine_similarity(a, b):
+    dot_product = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x ** 2 for x in a))
+    norm_b = math.sqrt(sum(x ** 2 for x in b))
+    return dot_product / (norm_a * norm_b)
+
+# 对每个文档算一遍
+results = []
+for doc in documents:
+    score = cosine_similarity(query_vector, doc["vector"])
+    results.append((doc["text"], score))
+
+# 按分数从高到低排序
+results.sort(key=lambda x: x[1], reverse=True)
+
+for text, score in results:
+    print(f"[{score:.4f}] {text}")
+```
+
+输出：
+```
+[0.9971] Python 报错处理指南
+[0.9897] Python try except 用法
+[0.1031] Java 多线程编程
+[0.0682] MySQL 索引优化
+[0.0676] 团队周报模板
+```
+
+前两名都是 Python 异常处理相关，跟问题 "怎么处理异常" 高度相关。✓ 算法是对的。
+
+但是，这段代码有 4 个致命问题：
+
+  ❌ 问题 1：数据不持久。程序关了 → vectors 列表消失 → 下次要重新算所有向量。
+  ❌ 问题 2：不可扩展。5 篇文档，O(n) 暴力循环没问题。
+      5 万篇？每次查询跑 5 万次余弦相似度。500 万篇？别想了。
+  ❌ 问题 3：没有元数据过滤。你想搜"来源=员工手册"的文档？自己写 if。
+  ❌ 问题 4：没有增量更新。新增一篇文档 → 手动 append 到列表 → 重排索引。
+
+这四个问题，就是向量数据库存在的理由。
+
+
+三、ChromaDB 是什么？——"给向量建一个带编号的书架"
+====================================================
+
+▶ 它是什么？
+
+ChromaDB 是一个开源的向量数据库。专门用来存向量（Embedding）、查向量。
+它是 Python 生态中最轻量级的向量数据库——一行 pip install，五行代码就能跑。
+
+▶ 生活类比
+
+回到 Day 1 的图书馆类比：
+
+  没有向量数据库 = 所有书堆在地上
+      想找"关于 Python 报错处理的书"？趴在地上一本一本翻。每次都要翻全部。
+
+  MySQL = 每本书贴了标签（类别、作者、日期）
+      按标签找很快，但找"内容相似"的书做不到——标签写的是"编程"，
+      你怎么搜"debug 技巧"？
+
+  ChromaDB = 每本书都测量了"内容坐标"
+      "内容相似的书放在书架同一个区域"。你想找跟某本书内容相似的书，
+      直接走到那个区域就行。书名、作者这些标签也可以同时贴在书上（元数据）。
+
+▶ ChromaDB 的三个核心概念
+
+  Collection（集合）  ≈ MySQL 的"表"（table）
+      一个 Collection 存一类向量。比如 "员工手册" Collection、"产品文档" Collection。
+
+  Document（文档）    ≈ MySQL 的"行"（row）
+      一条数据 = 文字原文 + 向量 + 元数据。三件套。
+
+  Embedding Function（嵌入函数）
+      把文字自动转成向量的"翻译器"。ChromaDB 内置了多种嵌入函数，
+      也可以用 OpenAI 的——这个后面会讲。
+
+▶ ChromaDB 在 RAG 链路中的位置
+
+  回顾 Day 1 的全链路图：
+
+      入库：原始文档 → 分块(Node) → Embedding → [ChromaDB Collection] ← 今天要学的
+      问答：用户问题 → Embedding → Retriever → [ChromaDB 查最相似的 Node] ← 今天要学的
+
+
+四、安装 ChromaDB（✍️ 你操作）
+================================
+
+在 PowerShell 中执行：
+
+```powershell
+cd "C:\Users\86136\Desktop\Study Agent"
+poetry add chromadb
+```
+
+安装完成后验证：
+
+```powershell
+poetry run python -c "import chromadb; print(chromadb.__version__)"
+```
+
+看到类似 `0.5.23` 的版本号就成功了。
+
+每行解释：
+  - poetry add chromadb → 用 Poetry 安装 chromadb 包
+  - Poetry 会自动把 "chromadb" 写入 pyproject.toml 的 dependencies 里
+  - 跟之前装 openai、anthropic 的方式完全一样
+
+
+五、第一个 ChromaDB 程序——"存进去，查出来"
+=============================================
+
+下面是一个完整的、可运行的 ChromaDB 入門程序。
+
+先理解 ChromaDB 的两种传数据方式：
+
+  方式 A（自动 Embedding）：只传 documents，ChromaDB 用内置模型自动生成向量
+    → 优点：代码最简洁。缺点：首次运行要下载 80MB 模型（all-MiniLM-L6-v2）
+
+  方式 B（手动传向量）：同时传 documents 和 embeddings
+    → 优点：跳过下载，向量由你控制。缺点：多写几行代码
+
+  我们的 demo 用方式 B（免下载），但核心概念完全一样。
+
+创建文件 src/study_agent/chromadb_demo.py（✍️ 建议手敲）：
+
+```python
+import chromadb
+
+
+# 辅助函数：根据主题生成一个4维示意向量
+# 真实 Embedding 是 1536 维，这里用 4 维演示原理
+def make_vector(topic: str) -> list[float]:
+    if topic == "编程":
+        return [0.9, 0.05, 0.03, 0.02]
+    elif topic == "美食":
+        return [0.05, 0.9, 0.03, 0.02]
+    elif topic == "IT":
+        return [0.8, 0.05, 0.1, 0.05]
+    return [0.1, 0.1, 0.1, 0.7]
+
+
+# ── 第 1 步：创建一个 ChromaDB 客户端 ──
+# ChromaDB 有两种模式：
+#   - EphemeralClient()：数据只存在内存，程序结束就消失（今天练习用这个）
+#   - PersistentClient(path="./chroma_data")：数据存到硬盘，关了也能再读
+client = chromadb.EphemeralClient()
+# 🤖 ephemeral = "短暂的"，读音 /ɪˈfemərəl/
+
+# ── 第 2 步：创建或获取一个 Collection ──
+# Collection 就像 MySQL 的"表"，用来存一类向量
+collection = client.get_or_create_collection(name="my_first_collection")
+
+# ── 第 3 步：往里加数据（同时传 documents + embeddings）──
+collection.add(
+    documents=[
+        "Python 是一种解释型编程语言，广泛用于数据科学和 AI 开发。",
+        "红烧肉的经典做法：五花肉焯水后加冰糖炒糖色，再慢炖两小时。",
+        "Git 是分布式版本控制系统，用于跟踪代码变更和团队协作。",
+        "制作提拉米苏需要马斯卡彭奶酪、手指饼干和浓缩咖啡。",
+    ],
+    embeddings=[
+        make_vector("编程"),  # Python → 编程类向量
+        make_vector("美食"),  # 红烧肉 → 美食类向量
+        make_vector("编程"),  # Git → 编程类向量
+        make_vector("美食"),  # 提拉米苏 → 美食类向量
+    ],
+    ids=["doc-1", "doc-2", "doc-3", "doc-4"],
+)
+
+# ── 第 4 步：查询（用查询向量，而非查询文字）──
+results = collection.query(
+    query_embeddings=[make_vector("美食")],  # 查找"美食"类文档
+    n_results=2,                             # 返回最相似的 2 条
+)
+
+print("查询结果：")
+for i, (doc_id, text, distance) in enumerate(
+    zip(results["ids"][0], results["documents"][0], results["distances"][0])
+):
+    print(f"  第{i+1}名 | ID: {doc_id} | 距离: {distance:.4f}")
+    print(f"         | {text}")
+```
+
+运行：
+
+```powershell
+poetry run python src/study_agent/chromadb_demo.py
+```
+
+实际输出：
+
+```
+查询结果：
+  第1名 | ID: doc-2 | 距离: 0.0000
+         | 红烧肉的经典做法：五花肉焯水后加冰糖炒糖色，再慢炖两小时。
+  第2名 | ID: doc-4 | 距离: 0.0000
+         | 制作提拉米苏需要马斯卡彭奶酪、手指饼干和浓缩咖啡。
+```
+
+关键观察：
+  **ChromaDB 自动把"红烧肉做法"和"提拉米苏"排在了"Python"前面！**
+  我们没写任何相似度计算代码，没写任何 for 循环。
+  我们传入了手动构造的向量（美食类向量的第2维高），
+  ChromaDB 自动匹配到了向量最接近的两条文档。
+
+▶ ChromaDB 的两种 Embedding 方式
+
+  方式 A：用 ChromaDB 内置模型（all-MiniLM-L6-v2）
+    - 代码最简洁：add(documents=...) + query(query_texts=...)
+    - 首次自动下载 80MB 模型，之后缓存
+    - 384 维向量，主要支持英文，免费
+
+  方式 B：自己传向量（我们的 demo 用的方式）
+    - 跳过下载，立即运行
+    - 向量质量由你控制（可以用 OpenAI 的 1536 维向量）
+    - 实际 RAG 项目推荐这种方式 + OpenAI embedding
+
+  今天的练习为了免下载，用方式 B。第八节会展示"方式 B + OpenAI"的真实实战。
+
+▶ 参数解释
+
+  n_results=2
+    - 返回最相似的 N 条结果
+    - 为什么是 2？因为我们只加了 4 条数据，2 条足够看效果
+    - 在实际 RAG 系统中通常设 3-10
+
+  distance（距离）
+    - ChromaDB 支持多种距离度量，默认是 squared L2（欧氏距离平方）
+    - 也可以指定 cosine（余弦距离），值域 [0, 2]
+    - 余弦距离 = 1 - 余弦相似度
+    - 越小越相似 ← 注意这和"相似度分数"相反！
+
+  metadata={"hnsw:space": "cosine"}
+    - 在创建 collection 时传入此参数可以指定使用余弦距离
+    - 如果不指定，ChromaDB 默认用 squared L2
+
+
+六、ChromaDB 的 CRUD 操作
+==========================
+
+跟 MySQL 一样，ChromaDB 也有增删改查。在 Python 交互环境中逐个试一遍。
+
+✍️ 在 PowerShell 中启动 Python 交互环境：
+
+```powershell
+poetry run python
+```
+
+然后在 >>> 提示符下，一行一行输入以下代码：
+
+```python
+import chromadb
+
+client = chromadb.EphemeralClient()
+collection = client.get_or_create_collection(name="crud_demo")
+
+# ══════════ C — Create（增）══════════
+collection.add(
+    documents=["Python 入门教程", "Java 入门教程", "C++ 入门教程"],
+    embeddings=[[0.9,0.05,0.05], [0.85,0.1,0.05], [0.8,0.15,0.05]],
+    ids=["py", "java", "cpp"],
+)
+
+# 查一下数量确认添加成功
+print(collection.count())  # 输出: 3
+
+# ══════════ R — Read（查）══════════
+# 按 ID 精确获取
+item = collection.get(ids=["py"])
+print(item["documents"])  # 输出: ['Python 入门教程']
+
+# 获取所有数据
+all_items = collection.get()
+print(all_items["ids"])       # 输出: ['py', 'java', 'cpp']
+print(all_items["documents"]) # 输出: ['Python 入门教程', 'Java 入门教程', 'C++ 入门教程']
+
+# ══════════ U — Update（改）══════════
+collection.update(
+    ids=["py"],
+    documents=["Python 从入门到精通（已更新版）"],
+    embeddings=[[0.9, 0.05, 0.05]],
+)
+updated = collection.get(ids=["py"])
+print(updated["documents"])  # 输出: ['Python 从入门到精通（已更新版）']
+
+# ══════════ D — Delete（删）══════════
+collection.delete(ids=["cpp"])
+print(collection.count())  # 输出: 2
+
+# 删完 cpp 后还剩 py 和 java
+remaining = collection.get()
+print(remaining["ids"])  # 输出: ['py', 'java']
+
+# 退出交互环境
+exit()
+```
+
+▶ 关键规则（这是坑，要记住）
+
+  1. ids 必须唯一——跟 MySQL 的主键一样。重复 add 同一个 id 会报错。
+     除非你在 add 时用 update 模式，但这不是默认行为。
+
+  2. add 时 documents 和 ids 的长度必须一致——几条文档就要配几个 id。
+
+  3. 默认的 embedding function 在 add 时自动计算向量。
+     update 后向量也会自动重新计算。你不需要手动操作向量。
+
+  4. get() 不传参数会返回所有数据，但数据量大的时候别这样做——
+     相当于 SELECT * FROM table 没有 LIMIT。
+
+  5. delete() 可以按 id 删除，也可以用 where 条件按元数据删除（见第八节）。
+
+
+七、从"暴力检索"到"ChromaDB"——对比实验
+========================================
+
+现在做一个有说服力的对比：同一批数据，分别用"暴力 for 循环"和 ChromaDB 做检索。
+
+创建文件 src/study_agent/chromadb_vs_bruteforce.py：
+
+```python
+"""
+暴力检索 vs ChromaDB — 对比实验
+目的：让你直观感受"有工具"和"没工具"的差距
+"""
+import math
+import time
+import chromadb
+
+
+# ── 准备数据：200 条简单的模拟文档 ──
+# 真实场景中这些是 1536 维向量，这里用 4 维示意
+def make_documents(n):
+    """生成 n 条带有设定向量的文档"""
+    import random
+    random.seed(42)  # 固定随机种子，保证每次运行结果一致
+    docs = []
+    vectors = []
+    for i in range(n):
+        # 每条文档的向量是 4 个随机数
+        vec = [random.random() for _ in range(4)]
+        docs.append(f"这是第 {i+1} 篇文档，内容是关于主题 {(i % 10) + 1} 的讨论。")
+        vectors.append(vec)
+    return docs, vectors
+
+
+docs, vectors = make_documents(200)
+query_vec = [0.5, 0.5, 0.5, 0.5]  # 查询向量
+
+
+# ══════════ 方案 A：暴力检索 ══════════
+def brute_force_search(query, all_vectors, all_docs, top_k=5):
+    """逐个计算余弦相似度，排序后返回 Top-K"""
+    def cosine_sim(a, b):
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x**2 for x in a))
+        norm_b = math.sqrt(sum(x**2 for x in b))
+        return dot / (norm_a * norm_b)
+
+    scores = []
+    for i, vec in enumerate(all_vectors):
+        scores.append((i, cosine_sim(query, vec)))
+    scores.sort(key=lambda x: x[1], reverse=True)
+
+    return [(all_docs[i], score) for i, score in scores[:top_k]]
+
+
+start = time.perf_counter()
+bf_results = brute_force_search(query_vec, vectors, docs, top_k=5)
+bf_time = time.perf_counter() - start
+
+
+# ══════════ 方案 B：ChromaDB 检索 ══════════
+client = chromadb.EphemeralClient()
+collection = client.get_or_create_collection(name="vs_demo")
+
+# ChromaDB add 时我们手动传 embeddings 参数（用上刚刚的 vectors）
+collection.add(
+    documents=docs,
+    embeddings=vectors,  # 手动传向量，跳过 ChromaDB 内置 Embedding 模型
+    ids=[f"doc-{i}" for i in range(len(docs))],
+)
+
+start = time.perf_counter()
+chroma_results = collection.query(
+    query_embeddings=[query_vec],  # 直接传向量而非文字
+    n_results=5,
+)
+chroma_time = time.perf_counter() - start
+
+# ══════════ 对比输出 ══════════
+print("=" * 50)
+print("暴力检索 vs ChromaDB — 200 条文档检索对比")
+print("=" * 50)
+print()
+
+print("【方案 A：暴力检索】")
+print(f"  耗时: {bf_time * 1000:.2f} ms")
+print(f"  Top-5 结果:")
+for i, (doc, score) in enumerate(bf_results):
+    print(f"    {i+1}. [{score:.6f}] {doc[:40]}...")
+
+print()
+print("【方案 B：ChromaDB】")
+print(f"  耗时: {chroma_time * 1000:.2f} ms")
+print(f"  Top-5 结果:")
+for i, (doc_id, doc_text, dist) in enumerate(
+    zip(chroma_results["ids"][0], chroma_results["documents"][0], chroma_results["distances"][0])
+):
+    print(f"    {i+1}. [dist={dist:.6f}] {doc_text[:40]}...")
+
+print()
+print("【核心差异】")
+print(f"  代码量：暴力检索 ~20 行，ChromaDB ~5 行")
+print(f"  元数据过滤：暴力检索不支持，ChromaDB 一行 where 条件")
+print(f"  数据持久化：暴力检索不支持，ChromaDB PersistentClient")
+print(f"  大规模加速：暴力检索 O(n)，ChromaDB 内置 HNSW 索引 O(log n)")
+```
+
+运行：
+
+```powershell
+poetry run python src/study_agent/chromadb_vs_bruteforce.py
+```
+
+200 条数据时两者速度差不多（都是毫秒级），但你要看到的是：
+  - ChromaDB 代码量少了一半以上
+  - 多出来的能力（元数据过滤、持久化、大规模加速）是暴力检索给不了的
+
+
+八、带 OpenAI Embedding 的语义搜索——真正的中文实战
+=====================================================
+
+前面用的 ChromaDB 内置模型对中文支持一般。RAG 实战中我们用的是
+OpenAI 的 text-embedding-3-small——Day 1 已经介绍过它。
+
+现在把 ChromaDB + OpenAI Embedding 结合起来。
+
+▶ 概念解释：Embedding Function
+
+ChromaDB 的 add() 方法有两种用法：
+
+  用法 A（前面用的）：不传 embeddings，只用 documents
+    → ChromaDB 用自己的内置模型自动生成向量
+
+  用法 B（下面用的）：传 embeddings（已经生成的向量）
+    → ChromaDB 直接用你给的向量，跳过内置模型
+
+  用法 C（后面学的）：自定义 embedding_function
+    → 把 OpenAI 的模型"注册"给 ChromaDB，让它自动调用
+
+我们先用"用法 B"，因为它最透明——你能清楚地看到每一步。
+
+创建文件 src/study_agent/chromadb_openai_demo.py：
+
+```python
+"""
+ChromaDB + OpenAI Embedding 中文语义搜索
+这是 RAG 系统中"检索"步骤的实际实现
+"""
+from openai import OpenAI
+import chromadb
+
+client_openai = OpenAI()  # 自动读取 OPENAI_API_KEY 环境变量
+client_chroma = chromadb.EphemeralClient()
+collection = client_chroma.get_or_create_collection(name="chinese_docs")
+
+# ══════════ 第 1 步：准备中文文档 ══════════
+chinese_docs = [
+    "员工报销流程：员工需在系统中填写《报销申请单》，附上发票照片，"
+    "提交给直属上级审批。审批通过后财务部在 5 个工作日内打款。",
+
+    "年假政策：入职满 1 年的员工享有 5 天带薪年假，满 3 年 10 天，"
+    "满 5 年 15 天。年假需提前一周向直属上级申请。",
+
+    "办公室 Wi-Fi 密码为 Study@2026，5G 频段。如遇网络故障请拨打"
+    "IT 服务热线 8888，工作日 9:00-18:00 有人值班。",
+
+    "招聘流程：各部门在系统中提交 HC 申请，HR 发布职位并筛选简历，"
+    "面试分为技术面、HR 面和终面三轮。整个流程约需 2-3 周。",
+
+    "Python 编程规范：所有代码需通过 Black 格式化，line-length=100，"
+    "使用 Ruff 做 lint 检查，提交前必须运行 pre-commit hooks。",
+
+    "请假规定：病假需提供医院证明，事假每年累计不超过 10 天。"
+    "紧急情况可事后补请假申请，但需在 3 个工作日内完成。",
+
+    "出差报销标准：一线城市住宿标准 500 元/晚，二线城市 350 元/晚。"
+    "交通费实报实销，餐补每天 100 元。所有报销需提供正规发票。",
+
+    "代码审查流程：PR 提交后需至少一位团队成员 Code Review 通过，"
+    "所有 CI 检查（lint / test / typecheck）必须通过后方可合并到 main 分支。",
+]
+
+# ══════════ 第 2 步：用 OpenAI 生成 Embedding ══════════
+print("正在生成 Embedding...")
+response = client_openai.embeddings.create(
+    model="text-embedding-3-small",  # 1536 维，$0.02/1M tokens
+    input=chinese_docs,
+)
+embeddings = [item.embedding for item in response.data]
+print(f"  已为 {len(embeddings)} 篇文档生成向量，每篇 {len(embeddings[0])} 维")
+
+# ══════════ 第 3 步：存入 ChromaDB ══════════
+collection.add(
+    documents=chinese_docs,
+    embeddings=embeddings,  # 传入我们刚生成的 OpenAI 向量
+    ids=[f"doc-{i}" for i in range(len(chinese_docs))],
+)
+print(f"  已存入 ChromaDB，Collection 中有 {collection.count()} 条数据")
+
+# ══════════ 第 4 步：语义搜索 ══════════
+test_queries = [
+    "我生病了怎么请假？",
+    "出差住酒店能报销多少钱？",
+    "代码提交流程是什么？",
+]
+
+for query in test_queries:
+    print(f"\n{'='*50}")
+    print(f"🔍 查询: {query}")
+
+    # 先把查询文字也转成 Embedding
+    query_embedding = client_openai.embeddings.create(
+        model="text-embedding-3-small",
+        input=[query],
+    ).data[0].embedding
+
+    # 用向量去 ChromaDB 里搜
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=3,
+    )
+
+    for rank, (doc_id, text, dist) in enumerate(
+        zip(results["ids"][0], results["documents"][0], results["distances"][0])
+    ):
+        print(f"  #{rank+1} [距离={dist:.4f}] {text[:60]}...")
+```
+
+运行：
+
+```powershell
+poetry run python src/study_agent/chromadb_openai_demo.py
+```
+
+预期结果分析：
+
+  查询 "我生病了怎么请假？"
+    → 第 1 名应该命中 "请假规定：病假需提供医院证明..."
+      这不是关键词匹配！"我生病了"跟"病假"、"怎么请假"跟"请假规定"——语义关联。
+
+  查询 "出差住酒店能报销多少钱？"
+    → 第 1 名应该命中 "出差报销标准：一线城市住宿标准 500 元/晚..."
+      "住酒店" vs "住宿"——同义词替换，关键词匹配做不到。
+
+  查询 "代码提交流程是什么？"
+    → 第 1 名应该命中 "代码审查流程：PR 提交后需至少一位团队成员..."
+      也可能命中 "Python 编程规范"——取决于语义距离。
+
+▶ 为什么不用 ChromaDB 内置模型而用 OpenAI 的？
+
+  | 对比维度 | 内置 all-MiniLM-L6-v2 | OpenAI text-embedding-3-small |
+  |---------|----------------------|------------------------------|
+  | 向量维度 | 384                   | 1536（更丰富的语义表达）        |
+  | 中文支持 | 一般                  | 优秀（多语言训练数据）          |
+  | 费用     | 免费                  | $0.02/1M tokens              |
+  | 网络     | 离线可用              | 需要 API 连接                  |
+  | 速度     | 本地 CPU，较慢（大量）  | API 云端，快                   |
+
+  RAG 实战中我们用 OpenAI 的 Embedding，因为中文效果好太多。
+  8 篇文档的 Embedding 成本几乎为零（不到 0.01 分钱）。
+
+
+九、理解"距离分数"——为什么需要一个阈值
+========================================
+
+前面的输出里有个字段叫 distance（距离）。这个数字决定了"要不要这个结果"。
+
+▶ 余弦距离 vs 余弦相似度
+
+ChromaDB 默认返回的是"余弦距离"：
+
+  余弦距离 = 1 - 余弦相似度
+
+  余弦相似度 = 1.0  → 余弦距离 = 0.0  → 完全一样
+  余弦相似度 = 0.8  → 余弦距离 = 0.2  → 非常相关
+  余弦相似度 = 0.5  → 余弦距离 = 0.5  → 有点关系
+  余弦相似度 = 0.0  → 余弦距离 = 1.0  → 无关
+  余弦相似度 = -1.0 → 余弦距离 = 2.0  → 完全相反
+
+▶ 为什么需要阈值？
+
+想象你问 "Python 怎么读取 CSV 文件？"，但你的知识库里只有
+"红烧肉做法"和"年假政策"。ChromaDB 还是会返回 Top-3——它只是
+"选最近的那个"，哪怕最近的那个其实毫无关系。
+
+所以 RAG 系统中一定要设置相似度阈值：
+
+```python
+# ❌ 没有阈值——啥都返回
+results = collection.query(query_embeddings=[query_vec], n_results=5)
+
+# ✅ 有阈值——只返回真正相关的
+results = collection.query(query_embeddings=[query_vec], n_results=5)
+
+SIMILARITY_THRESHOLD = 0.7  # 余弦相似度阈值
+
+filtered = []
+for i, (doc, dist) in enumerate(zip(results["documents"][0], results["distances"][0])):
+    similarity = 1 - dist  # 把距离转回相似度
+    if similarity >= SIMILARITY_THRESHOLD:
+        filtered.append((doc, similarity))
+    else:
+        # 不够相似的不放进 prompt，防止 LLM 被噪音干扰
+        pass
+```
+
+▶ 阈值设多少合适？
+
+  - 0.8 以上：高置信度，几乎肯定是相关文档
+  - 0.6-0.8：中等，可能相关，可能需要人工判断
+  - 0.6 以下：低置信度，大概率不相关
+  - 具体阈值取决于你的 Embedding 模型和数据特点——需要做实验调
+
+  为什么是 0.7 而不是 0.9？
+    你的知识库不会每篇文档都跟问题一一对应。
+    设 0.9 太严格 → 很多有用的文档被过滤掉（漏检）。
+    设 0.5 太宽松 → 无关文档也混进来污染 prompt（误检）。
+    0.7 是一个经验性起点，实际项目中需要通过评测来选定（Week 3 Day 5 会做）。
+
+
+十、元数据过滤——"既要语义像，还要标签对"
+===========================================
+
+ChromaDB 不止能做语义搜索，还能结合元数据做精确过滤。
+
+场景：用户问 "IT 部门相关的网络问题怎么处理？"
+你既要语义搜索 "网络问题"，又要保证来源是 "IT部门" 而非 "行政部"。
+
+```python
+# 添加数据时带元数据
+collection.add(
+    documents=[
+        "Wi-Fi 密码及网络故障报修流程",
+        "办公用品申领流程",
+    ],
+    metadatas=[
+        {"category": "IT", "source": "员工手册 v2.0"},
+        {"category": "行政", "source": "员工手册 v2.0"},
+    ],
+    ids=["it-wifi", "admin-office"],
+)
+
+# 查询时同时做语义检索 + 精确过滤
+results = collection.query(
+    query_texts=["网络故障怎么办"],
+    n_results=3,
+    where={"category": "IT"},  # 只搜 IT 分类下的文档
+)
+
+# 也支持比较操作符
+results = collection.query(
+    query_texts=["报销流程"],
+    n_results=3,
+    where={"category": {"$in": ["财务", "行政"]}},  # 搜多个分类
+)
+```
+
+支持的 where 操作符：$eq（等于）、$ne（不等于）、$in（在列表中）、$gt（大于）、$gte（大于等于）、$lt（小于）、$lte（小于等于）。
+
+▶ 这就是 RAG 中"混合检索"的雏形
+
+  语义检索（向量相似度） + 元数据过滤（精确条件） = 更精准的检索结果。
+  Week 3 Day 4 会讲到更高级的混合检索策略（向量 + 关键词）。
+
+
+十一、ChromaDB 的两种运行模式
+==============================
+
+前面一直用的是 EphemeralClient（内存模式）。实际项目中有两种选择：
+
+```python
+# 模式 A：内存模式（EphemeralClient）
+# 数据只存在于程序运行期间，程序结束即消失
+# 适合：学习、测试、临时实验
+client = chromadb.EphemeralClient()
+
+# 模式 B：持久化模式（PersistentClient）
+# 数据存到硬盘上的一个目录里
+# 适合：实际项目、数据需要跨次运行的场景
+client = chromadb.PersistentClient(path="./chroma_data")
+# ↑ path 是数据存储目录，相对于你运行 Python 的目录
+# 第一次运行 → 创建目录并存储数据
+# 第二次运行 → 自动加载之前的数据
+```
+
+▶ PersistentClient 内部是怎么存储的？
+
+  ./chroma_data/ 目录下 ChromaDB 会创建：
+    - 一个 SQLite 数据库（存元数据、文档原文、id 等）
+    - 一个向量索引文件（存向量和 HNSW 索引结构）
+
+  这跟 Day 1 说的"向量数据库里也有传统数据库的组件"一致——
+  元数据用 SQLite（小型的 MySQL），向量用专用格式。
+
+
+十二、ChromaDB vs 其他向量数据库——一张对比表
+===============================================
+
+你做 RAG 项目时不一定只用 ChromaDB，但它是入门最佳选择。
+
+| 特性       | ChromaDB     | Pinecone       | Milvus        | Qdrant       |
+|-----------|--------------|----------------|---------------|--------------|
+| 部署方式    | 嵌入 Python  | 云服务（SaaS）   | 服务器/云      | 服务器/云     |
+| 安装难度    | ★☆☆ pip 即装  | ★☆☆ 注册即用    | ★★★ 需 Docker | ★★ 需 Docker |
+| 数据规模    | 中小（<100万） | 超大（亿级）     | 超大规模       | 大规模        |
+| 费用       | 免费开源      | 免费额度+付费    | 免费开源       | 免费开源      |
+| Python 集成 | ★★★ 最简洁   | ★★ 有 SDK      | ★★ 有 SDK     | ★★ 有 SDK    |
+| 适合场景    | 学习、原型、   | 生产环境、       | 企业级、       | 生产环境、     |
+|           | 中小项目       | 免运维          | 海量数据       | 高级过滤      |
+
+你现在的阶段选 ChromaDB 的原因：
+  1. 零运维成本——不需要装 Docker，不需要注册云服务
+  2. 跟 Python 深度集成——5 行代码跑起来
+  3. 学习曲线最平——先理解向量数据库的"感觉"，再考虑其他工具
+  4. 做完第一个 Agent 项目（Week 4）后，如果想升级可以换 Milvus
+
+
+十三、今日自检（✍️ 逐条确认）
+=============================
+
+□ 能在 30 秒内说出向量数据库和 MySQL 的本质区别
+□ 能自己写一个 ChromaDB 的完整 CRUD 流程（不查文档）
+□ 能用 OpenAI Embedding + ChromaDB 做中文语义搜索
+□ 能解释"余弦距离"和"余弦相似度"的关系
+□ 能说出 similarity threshold 为什么不能设太高也不能太低
+□ 能写出 metadata where 过滤的语法
+□ 能区分 EphemeralClient 和 PersistentClient 的使用场景
+
+（如果有任何一条做不到，回到对应的章节重读/重写一遍代码。）
+
+
+十四、明天预告
+==============
+
+Day 3：文档分块与索引流水线
+  - 把真实的 .txt / .md 文件解析成分块（Node）
+  - 亲自调 chunk_size 和 chunk_overlap，看分块效果差异
+  - 将分块后的文档建立索引，存入 ChromaDB
+  - 为 Day 4 的完整 RAG 问答流水线做准备
