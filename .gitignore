@@ -34,6 +34,9 @@ poetry.lock
 CLAUDE.md
 16*.md
 16*.html
+*.docx
+# Large data files
+数据结构和算法.html
 
 # OS
 .DS_Store
