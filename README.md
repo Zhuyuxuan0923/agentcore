@@ -2,8 +2,6 @@
 
 上传你的文档（PDF / DOCX / Markdown / TXT），用自然语言提问，获得带来源引用的答案。
 
-**这是「16 周 AI Agent 工程师养成计划」的作品 1**，技术栈覆盖：Python · FastAPI · RAG · ChromaDB · Prompt Engineering · Next.js。
-
 ## Demo 预览
 
 ```
